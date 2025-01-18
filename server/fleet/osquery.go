@@ -1,5 +1,7 @@
 package fleet
 
+import "errors"
+
 // OsqueryDistributedQueryResults represents the format of the results of an
 // osquery distributed query.
 type OsqueryDistributedQueryResults map[string][]map[string]string
@@ -7,6 +9,16 @@ type OsqueryDistributedQueryResults map[string][]map[string]string
 // OsqueryStatus represents osquery status codes (0 = success, nonzero =
 // failure)
 type OsqueryStatus int
+
+var ErrLegacyQueryPack = errors.New("legacy query pack, storage not supported")
+
+// Stats contains the performance statistics about the execution of a specific osquery query.
+type Stats struct {
+	WallTimeMs uint64 `json:"wall_time_ms"`
+	UserTime   uint64 `json:"user_time"`
+	SystemTime uint64 `json:"system_time"`
+	Memory     uint64 `json:"memory"`
+}
 
 const (
 	// StatusOK is the success code returned by osquery

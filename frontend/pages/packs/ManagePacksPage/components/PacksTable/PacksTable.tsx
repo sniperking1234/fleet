@@ -48,7 +48,7 @@ const PacksTable = ({
   }, [packs, searchString, setFilteredPacks]);
 
   const onQueryChange = useCallback(
-    (queryData) => {
+    (queryData: any) => {
       const { searchQuery } = queryData;
       setSearchString(searchQuery);
     },
@@ -58,7 +58,7 @@ const PacksTable = ({
   // TODO: useCallback search string
   const emptyState = () => {
     const emptyPacks: IEmptyTableProps = {
-      iconName: "empty-packs",
+      graphicName: "empty-packs",
       header: "You don't have any packs",
       info:
         "Query packs allow you to schedule recurring queries for your hosts.",
@@ -73,8 +73,8 @@ const PacksTable = ({
       ),
     };
     if (searchString) {
-      delete emptyPacks.iconName;
-      emptyPacks.header = "No packs match the current search criteria.";
+      delete emptyPacks.graphicName;
+      emptyPacks.header = "No packs match the current search criteria";
       emptyPacks.info =
         "Expecting to see packs? Try again in a few seconds as the system catches up.";
       delete emptyPacks.primaryButton;
@@ -90,25 +90,25 @@ const PacksTable = ({
       onActionButtonClick: onEnablePackClick,
       buttonText: "Enable",
       variant: "text-icon",
-      icon: "check",
+      iconSvg: "check",
     },
     {
       name: "disable",
       onActionButtonClick: onDisablePackClick,
       buttonText: "Disable",
       variant: "text-icon",
-      icon: "disable",
+      iconSvg: "disable",
     },
   ];
   return (
     <div className={`${baseClass}`}>
       <TableContainer
-        resultsTitle={"packs"}
-        columns={tableHeaders}
+        resultsTitle="packs"
+        columnConfigs={tableHeaders}
         data={generateDataSet(filteredPacks)}
         isLoading={isLoading}
-        defaultSortHeader={"pack"}
-        defaultSortDirection={"desc"}
+        defaultSortHeader="pack"
+        defaultSortDirection="desc"
         showMarkAllPages={false}
         isAllPagesSelected={false}
         onQueryChange={onQueryChange}
@@ -118,14 +118,14 @@ const PacksTable = ({
         primarySelectAction={{
           name: "delete pack",
           buttonText: "Delete",
-          icon: "delete",
+          iconSvg: "trash",
           variant: "text-icon",
           onActionButtonClick: onDeletePackClick,
         }}
         secondarySelectActions={secondarySelectActions}
         emptyComponent={() =>
           EmptyTable({
-            iconName: emptyState().iconName,
+            graphicName: emptyState().graphicName,
             header: emptyState().header,
             info: emptyState().info,
             primaryButton: emptyState().primaryButton,

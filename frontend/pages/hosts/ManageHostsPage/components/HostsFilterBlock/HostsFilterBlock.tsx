@@ -7,36 +7,42 @@ import {
   IOperatingSystemVersion,
 } from "interfaces/operating_system";
 import {
-  FileVaultProfileStatus,
+  DiskEncryptionStatus,
   BootstrapPackageStatus,
   IMdmSolution,
   MDM_ENROLLMENT_STATUS,
+  MdmProfileStatus,
 } from "interfaces/mdm";
 import { IMunkiIssuesAggregate } from "interfaces/macadmins";
-import { ISoftware } from "interfaces/software";
 import { IPolicy } from "interfaces/policy";
-import { MacSettingsStatusQueryParam } from "services/entities/hosts";
+import { SoftwareAggregateStatus } from "interfaces/software";
+
+import {
+  HOSTS_QUERY_PARAMS,
+  MacSettingsStatusQueryParam,
+} from "services/entities/hosts";
 
 import {
   PLATFORM_LABEL_DISPLAY_NAMES,
+  PLATFORM_TYPE_ICONS,
+  isPlatformLabelNameFromAPI,
   PolicyResponse,
 } from "utilities/constants";
 
 // @ts-ignore
 import Dropdown from "components/forms/fields/Dropdown";
 import Button from "components/buttons/Button";
+import Icon from "components/Icon/Icon";
 
 import FilterPill from "../FilterPill";
 import PoliciesFilter from "../PoliciesFilter";
-import { MAC_SETTINGS_FILTER_OPTIONS } from "../../HostsPageConfig";
+import { OS_SETTINGS_FILTER_OPTIONS } from "../../HostsPageConfig";
 import DiskEncryptionStatusFilter from "../DiskEncryptionStatusFilter";
 import BootstrapPackageStatusFilter from "../BootstrapPackageStatusFilter/BootstrapPackageStatusFilter";
 
-import PencilIcon from "../../../../../../assets/images/icon-pencil-14x14@2x.png";
-import TrashIcon from "../../../../../../assets/images/icon-trash-14x14@2x.png";
-import PolicyIcon from "../../../../../../assets/images/icon-policy-fleet-black-12x12@2x.png";
-
 const baseClass = "hosts-filter-block";
+
+type PlatformLabelNameFromAPI = keyof typeof PLATFORM_TYPE_ICONS;
 
 interface IHostsFilterBlockProps {
   /**
@@ -52,37 +58,43 @@ interface IHostsFilterBlockProps {
     policyId?: any;
     policy?: IPolicy;
     macSettingsStatus?: any;
-    softwareId?: any;
+    softwareId?: number;
+    softwareTitleId?: number;
+    softwareVersionId?: number;
     mdmId?: number;
     mdmEnrollmentStatus?: any;
     lowDiskSpaceHosts?: number;
-    osId?: any;
-    osName?: any;
-    osVersion?: any;
+    osVersionId?: string;
+    osName?: string;
+    osVersion?: string;
+    vulnerability?: string;
     munkiIssueId?: number;
     osVersions?: IOperatingSystemVersion[];
-    softwareDetails: ISoftware | null;
+    softwareDetails: { name: string; version?: string } | null;
     mdmSolutionDetails: IMdmSolution | null;
-    diskEncryptionStatus?: FileVaultProfileStatus;
+    osSettingsStatus?: MdmProfileStatus;
+    diskEncryptionStatus?: DiskEncryptionStatus;
     bootstrapPackageStatus?: BootstrapPackageStatus;
+    softwareStatus?: SoftwareAggregateStatus;
   };
   selectedLabel?: ILabel;
   isOnlyObserver?: boolean;
   handleClearRouteParam: () => void;
   handleClearFilter: (omitParams: string[]) => void;
   onChangePoliciesFilter: (response: PolicyResponse) => void;
-  onChangeDiskEncryptionStatusFilter: (
-    response: FileVaultProfileStatus
-  ) => void;
+  onChangeOsSettingsFilter: (newStatus: MdmProfileStatus) => void;
+  onChangeDiskEncryptionStatusFilter: (response: DiskEncryptionStatus) => void;
   onChangeBootstrapPackageStatusFilter: (
     response: BootstrapPackageStatus
   ) => void;
   onChangeMacSettingsFilter: (
     newMacSettingsStatus: MacSettingsStatusQueryParam
   ) => void;
+  onChangeSoftwareInstallStatusFilter: (
+    newStatus: SoftwareAggregateStatus
+  ) => void;
   onClickEditLabel: (evt: React.MouseEvent<HTMLButtonElement>) => void;
   onClickDeleteLabel: () => void;
-  isSandboxMode?: boolean;
 }
 
 /**
@@ -94,12 +106,15 @@ const HostsFilterBlock = ({
     policyId,
     macSettingsStatus,
     softwareId,
+    softwareTitleId,
+    softwareVersionId,
     mdmId,
     mdmEnrollmentStatus,
     lowDiskSpaceHosts,
-    osId,
+    osVersionId,
     osName,
     osVersion,
+    vulnerability,
     munkiIssueId,
     munkiIssueDetails,
     policyResponse,
@@ -107,26 +122,41 @@ const HostsFilterBlock = ({
     softwareDetails,
     policy,
     mdmSolutionDetails,
+    osSettingsStatus,
     diskEncryptionStatus,
     bootstrapPackageStatus,
+    softwareStatus,
   },
   selectedLabel,
   isOnlyObserver,
   handleClearRouteParam,
   handleClearFilter,
   onChangePoliciesFilter,
+  onChangeOsSettingsFilter,
   onChangeDiskEncryptionStatusFilter,
   onChangeBootstrapPackageStatusFilter,
   onChangeMacSettingsFilter,
+  onChangeSoftwareInstallStatusFilter,
   onClickEditLabel,
   onClickDeleteLabel,
-  isSandboxMode = false,
 }: IHostsFilterBlockProps) => {
   const renderLabelFilterPill = () => {
     if (selectedLabel) {
       const { description, display_text, label_type } = selectedLabel;
       const pillLabel =
-        PLATFORM_LABEL_DISPLAY_NAMES[display_text] ?? display_text;
+        (isPlatformLabelNameFromAPI(display_text) &&
+          PLATFORM_LABEL_DISPLAY_NAMES[display_text]) ||
+        display_text;
+
+      // Hide built-in labels supported in label dropdown
+      if (
+        label_type === "builtin" &&
+        Object.keys(PLATFORM_TYPE_ICONS).includes(
+          display_text as PlatformLabelNameFromAPI
+        )
+      ) {
+        return <></>;
+      }
 
       return (
         <>
@@ -137,11 +167,11 @@ const HostsFilterBlock = ({
           />
           {label_type !== "builtin" && !isOnlyObserver && (
             <>
-              <Button onClick={onClickEditLabel} variant={"text-icon"}>
-                <img src={PencilIcon} alt="Edit label" />
+              <Button onClick={onClickEditLabel} variant="small-icon">
+                <Icon name="pencil" size="small" />
               </Button>
-              <Button onClick={onClickDeleteLabel} variant={"text-icon"}>
-                <img src={TrashIcon} alt="Delete label" />
+              <Button onClick={onClickDeleteLabel} variant="small-icon">
+                <Icon name="trash" size="small" />
               </Button>
             </>
           )}
@@ -153,11 +183,11 @@ const HostsFilterBlock = ({
   };
 
   const renderOSFilterBlock = () => {
-    if (!osId && !(osName && osVersion)) return null;
-
     let os: IOperatingSystemVersion | undefined;
-    if (osId) {
-      os = osVersions?.find((v) => v.os_id === osId);
+    if (osVersionId) {
+      os = osVersions?.find(
+        (v) => v.os_version_id === parseInt(osVersionId, 10)
+      );
     } else if (osName && osVersion) {
       const name: string = osName;
       const vers: string = osVersion;
@@ -168,6 +198,7 @@ const HostsFilterBlock = ({
           version.toLowerCase() === vers.toLowerCase()
       );
     }
+
     if (!os) return null;
 
     const { name, name_only, version } = os;
@@ -189,7 +220,21 @@ const HostsFilterBlock = ({
       <FilterPill
         label={label}
         tooltipDescription={TooltipDescription}
-        onClear={() => handleClearFilter(["os_id", "os_name", "os_version"])}
+        onClear={() =>
+          handleClearFilter(["os_version_id", "os_name", "os_version"])
+        }
+      />
+    );
+  };
+
+  const renderVulnerabilityFilterBlock = () => {
+    if (!vulnerability) return null;
+
+    return (
+      <FilterPill
+        label={vulnerability}
+        tooltipDescription={<span>Hosts affected by the specified CVE.</span>}
+        onClear={() => handleClearFilter(["vulnerability"])}
       />
     );
   };
@@ -202,7 +247,7 @@ const HostsFilterBlock = ({
         onChange={onChangePoliciesFilter}
       />
       <FilterPill
-        icon={PolicyIcon}
+        icon="policy"
         label={policy?.name ?? "..."}
         onClear={() => handleClearFilter(["policy_id", "policy_response"])}
         className={`${baseClass}__policies-filter-pill`}
@@ -217,8 +262,10 @@ const HostsFilterBlock = ({
         <Dropdown
           value={macSettingsStatus}
           className={`${baseClass}__macsettings-dropdown`}
-          options={MAC_SETTINGS_FILTER_OPTIONS}
+          options={OS_SETTINGS_FILTER_OPTIONS}
           onChange={onChangeMacSettingsFilter}
+          searchable={false}
+          iconName="filter-alt"
         />
         <FilterPill
           label={label}
@@ -228,25 +275,39 @@ const HostsFilterBlock = ({
     );
   };
 
-  const renderSoftwareFilterBlock = () => {
+  const renderSoftwareFilterBlock = (additionalClearParams?: string[]) => {
     if (!softwareDetails) return null;
 
     const { name, version } = softwareDetails;
-    const label = `${name || "Unknown software"} ${version || ""}`;
+    let label = name;
+    if (version) {
+      label += ` ${version}`;
+    }
+    label = label.trim() || "Unknown software";
 
-    const TooltipDescription = (
-      <span>
-        Hosts with {name || "Unknown software"},
-        <br />
-        {version || "version unknown"} installed
-      </span>
-    );
+    const clearParams = [
+      "software_id",
+      "software_version_id",
+      "software_title_id",
+    ];
+
+    if (additionalClearParams?.length) {
+      clearParams.push(...additionalClearParams);
+    }
+
+    // const TooltipDescription = (
+    //   <span>
+    //     Hosts with {name || "Unknown software"},
+    //     <br />
+    //     {version || "version unknown"} installed
+    //   </span>
+    // );
 
     return (
       <FilterPill
         label={label}
-        onClear={() => handleClearFilter(["software_id"])}
-        tooltipDescription={TooltipDescription}
+        onClear={() => handleClearFilter(clearParams)}
+        // tooltipDescription={TooltipDescription}
       />
     );
   };
@@ -282,14 +343,15 @@ const HostsFilterBlock = ({
     }`;
 
     // More narrow tooltip than other MDM tooltip
-    const MDM_STATUS_PILL_TOOLTIP: Record<string, JSX.Element> = {
+    const MDM_STATUS_PILL_TOOLTIP: Record<string, React.ReactNode> = {
       automatic: (
         <span>
           MDM was turned on <br />
           automatically using Apple <br />
           Automated Device <br />
-          Enrollment (DEP) or <br />
-          Windows Autopilot. <br />
+          Enrollment (DEP), <br />
+          Windows Autopilot, or <br />
+          Windows Azure AD Join. <br />
           Administrators can block <br />
           device users from turning
           <br /> MDM off.
@@ -302,14 +364,7 @@ const HostsFilterBlock = ({
           can turn MDM off.
         </span>
       ),
-      unenrolled: (
-        <span>
-          Hosts with MDM off <br />
-          don&apos;t receive macOS <br />
-          settings and macOS <br />
-          update encouragement.
-        </span>
-      ),
+      unenrolled: undefined, // no tooltip specified
       pending: (
         <span>
           Hosts ordered using Apple <br />
@@ -360,11 +415,28 @@ const HostsFilterBlock = ({
       <FilterPill
         label="Low disk space"
         tooltipDescription={TooltipDescription}
-        premiumFeatureTooltipDelayHide={1000}
         onClear={() => handleClearFilter(["low_disk_space"])}
-        isSandboxMode={isSandboxMode}
-        sandboxPremiumOnlyIcon
       />
+    );
+  };
+
+  const renderOsSettingsBlock = () => {
+    const label = "OS settings";
+    return (
+      <>
+        <Dropdown
+          value={osSettingsStatus}
+          className={`${baseClass}__os_settings-dropdown`}
+          options={OS_SETTINGS_FILTER_OPTIONS}
+          onChange={onChangeOsSettingsFilter}
+          searchable={false}
+          iconName="filter-alt"
+        />
+        <FilterPill
+          label={label}
+          onClear={() => handleClearFilter([HOSTS_QUERY_PARAMS.OS_SETTINGS])}
+        />
+      </>
     );
   };
 
@@ -378,8 +450,10 @@ const HostsFilterBlock = ({
           onChange={onChangeDiskEncryptionStatusFilter}
         />
         <FilterPill
-          label="macOS settings: Disk encryption"
-          onClear={() => handleClearFilter(["macos_settings_disk_encryption"])}
+          label="OS settings: Disk encryption"
+          onClear={() =>
+            handleClearFilter([HOSTS_QUERY_PARAMS.DISK_ENCRYPTION])
+          }
         />
       </>
     );
@@ -402,6 +476,28 @@ const HostsFilterBlock = ({
     );
   };
 
+  const renderSoftwareInstallStatusBlock = () => {
+    const OPTIONS = [
+      { value: "installed", label: "Installed" },
+      { value: "failed", label: "Failed" },
+      { value: "pending", label: "Pending" },
+    ];
+
+    return (
+      <>
+        <Dropdown
+          value={softwareStatus}
+          className={`${baseClass}__sw-install-status-dropdown`}
+          options={OPTIONS}
+          searchable={false}
+          onChange={onChangeSoftwareInstallStatusFilter}
+          iconName="filter-alt"
+        />
+        {renderSoftwareFilterBlock([HOSTS_QUERY_PARAMS.SOFTWARE_STATUS])}
+      </>
+    );
+  };
+
   const showSelectedLabel = selectedLabel && selectedLabel.type !== "all";
 
   if (
@@ -409,14 +505,19 @@ const HostsFilterBlock = ({
     policyId ||
     macSettingsStatus ||
     softwareId ||
+    softwareTitleId ||
+    softwareVersionId ||
+    softwareStatus ||
     mdmId ||
     mdmEnrollmentStatus ||
     lowDiskSpaceHosts ||
-    osId ||
+    osVersionId ||
     (osName && osVersion) ||
     munkiIssueId ||
+    osSettingsStatus ||
     diskEncryptionStatus ||
-    bootstrapPackageStatus
+    bootstrapPackageStatus ||
+    vulnerability
   ) {
     const renderFilterPill = () => {
       switch (true) {
@@ -447,18 +548,24 @@ const HostsFilterBlock = ({
           return renderPoliciesFilterBlock();
         case !!macSettingsStatus:
           return renderMacSettingsStatusFilterBlock();
-        case !!softwareId:
+        case !!softwareStatus:
+          return renderSoftwareInstallStatusBlock();
+        case !!softwareId || !!softwareVersionId || !!softwareTitleId:
           return renderSoftwareFilterBlock();
         case !!mdmId:
           return renderMDMSolutionFilterBlock();
         case !!mdmEnrollmentStatus:
           return renderMDMEnrollmentFilterBlock();
-        case !!osId || (!!osName && !!osVersion):
+        case !!osVersionId || (!!osName && !!osVersion):
           return renderOSFilterBlock();
+        case !!vulnerability:
+          return renderVulnerabilityFilterBlock();
         case !!munkiIssueId:
           return renderMunkiIssueFilterBlock();
         case !!lowDiskSpaceHosts:
           return renderLowDiskSpaceFilterBlock();
+        case !!osSettingsStatus:
+          return renderOsSettingsBlock();
         case !!diskEncryptionStatus:
           return renderDiskEncryptionStatusBlock();
         case !!bootstrapPackageStatus:

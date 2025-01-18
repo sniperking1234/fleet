@@ -13,7 +13,9 @@ module "byo-db" {
       address = "${module.redis.endpoint}:${module.redis.port}"
     }
     networking = {
-      subnets = var.vpc_config.networking.subnets
+      subnets         = var.vpc_config.networking.subnets
+      security_groups = var.fleet_config.networking.security_groups
+      ingress_sources = var.fleet_config.networking.ingress_sources
     }
   })
   ecs_cluster      = var.ecs_cluster
@@ -47,9 +49,10 @@ module "rds" {
   allowed_security_groups = concat(tolist(module.byo-db.byo-ecs.non_circular.security_groups), var.rds_config.allowed_security_groups)
   allowed_cidr_blocks     = var.rds_config.allowed_cidr_blocks
 
-  storage_encrypted   = true
-  apply_immediately   = var.rds_config.apply_immediately
-  monitoring_interval = var.rds_config.monitoring_interval
+  performance_insights_enabled = true
+  storage_encrypted            = true
+  apply_immediately            = var.rds_config.apply_immediately
+  monitoring_interval          = var.rds_config.monitoring_interval
 
   db_parameter_group_name         = var.rds_config.db_parameter_group_name == null ? aws_db_parameter_group.main[0].id : var.rds_config.db_parameter_group_name
   db_cluster_parameter_group_name = var.rds_config.db_cluster_parameter_group_name == null ? aws_rds_cluster_parameter_group.main[0].id : var.rds_config.db_cluster_parameter_group_name
@@ -61,6 +64,8 @@ module "rds" {
   skip_final_snapshot             = true
   snapshot_identifier             = var.rds_config.snapshot_identifier
 
+  preferred_maintenance_window = var.rds_config.preferred_maintenance_window
+
   cluster_tags = var.rds_config.cluster_tags
 }
 
@@ -71,7 +76,7 @@ data "aws_subnet" "redis" {
 
 module "redis" {
   source  = "cloudposse/elasticache-redis/aws"
-  version = "0.48.0"
+  version = "0.53.0"
 
   name                          = var.redis_config.name
   replication_group_id          = var.redis_config.replication_group_id == null ? var.redis_config.name : var.redis_config.replication_group_id
@@ -96,7 +101,7 @@ module "redis" {
     from_port   = 0
     to_port     = 65535
     protocol    = "tcp"
-    cidr_blocks = ["10.0.0.0/8"]
+    cidr_blocks = var.redis_config.allowed_cidrs
   }]
   tags = var.redis_config.tags
 }

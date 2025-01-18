@@ -2,6 +2,9 @@ package mysql
 
 import (
 	"context"
+	"database/sql"
+	"encoding/json"
+	"errors"
 	"testing"
 	"time"
 
@@ -9,6 +12,12 @@ import (
 	"github.com/jmoiron/sqlx"
 	"github.com/stretchr/testify/require"
 )
+
+type testCronStats struct {
+	fleet.CronStats
+	// Errors is a JSON string containing any errors encountered during the run.
+	Errors sql.NullString `db:"errors"`
+}
 
 func TestInsertUpdateCronStats(t *testing.T) {
 	const (
@@ -28,7 +37,10 @@ func TestInsertUpdateCronStats(t *testing.T) {
 	require.Equal(t, fleet.CronStatsTypeScheduled, res[0].StatsType)
 	require.Equal(t, fleet.CronStatsStatusPending, res[0].Status)
 
-	err = ds.UpdateCronStats(ctx, id, fleet.CronStatsStatusCompleted)
+	err = ds.UpdateCronStats(ctx, id, fleet.CronStatsStatusCompleted, &fleet.CronScheduleErrors{
+		"some_job":       errors.New("some error"),
+		"some_other_job": errors.New("some other error"),
+	})
 	require.NoError(t, err)
 
 	res, err = ds.GetLatestCronStats(ctx, scheduleName)
@@ -37,6 +49,21 @@ func TestInsertUpdateCronStats(t *testing.T) {
 	require.Equal(t, id, res[0].ID)
 	require.Equal(t, fleet.CronStatsTypeScheduled, res[0].StatsType)
 	require.Equal(t, fleet.CronStatsStatusCompleted, res[0].Status)
+
+	var stats []testCronStats
+	err = sqlx.SelectContext(ctx, ds.reader(ctx), &stats, `SELECT * FROM cron_stats ORDER BY id`)
+	require.NoError(t, err)
+	// Make sure we got valid JSON back.
+	var actualMap map[string]string
+	err = json.Unmarshal([]byte(stats[0].Errors.String), &actualMap)
+	require.NoError(t, err)
+
+	// Compare the error JSON with the expected object.
+	expectedJSON := `{"some_job": "some error", "some_other_job": "some other error"}`
+	var expectedMap map[string]string
+	err = json.Unmarshal([]byte(expectedJSON), &expectedMap)
+	require.NoError(t, err)
+	require.Equal(t, actualMap, expectedMap)
 }
 
 func TestGetLatestCronStats(t *testing.T) {
@@ -49,7 +76,7 @@ func TestGetLatestCronStats(t *testing.T) {
 
 	insertTestCS := func(name string, statsType fleet.CronStatsType, status fleet.CronStatsStatus, createdAt time.Time) {
 		stmt := `INSERT INTO cron_stats (stats_type, name, instance, status, created_at) VALUES (?, ?, ?, ?, ?)`
-		_, err := ds.writer.ExecContext(ctx, stmt, statsType, name, instanceID, status, createdAt)
+		_, err := ds.writer(ctx).ExecContext(ctx, stmt, statsType, name, instanceID, status, createdAt)
 		require.NoError(t, err)
 	}
 
@@ -167,12 +194,12 @@ func TestCleanupCronStats(t *testing.T) {
 
 	for _, c := range cases {
 		stmt := `INSERT INTO cron_stats (stats_type, name, instance, status, created_at) VALUES (?, ?, ?, ?, ?)`
-		_, err := ds.writer.ExecContext(ctx, stmt, fleet.CronStatsTypeScheduled, name, instance, c.status, c.createdAt)
+		_, err := ds.writer(ctx).ExecContext(ctx, stmt, fleet.CronStatsTypeScheduled, name, instance, c.status, c.createdAt)
 		require.NoError(t, err)
 	}
 
-	var stats []fleet.CronStats
-	err := sqlx.SelectContext(ctx, ds.reader, &stats, `SELECT * FROM cron_stats ORDER BY id`)
+	var stats []testCronStats
+	err := sqlx.SelectContext(ctx, ds.reader(ctx), &stats, `SELECT * FROM cron_stats ORDER BY id`)
 	require.NoError(t, err)
 	require.Len(t, stats, len(cases))
 	for i, s := range stats {
@@ -183,8 +210,8 @@ func TestCleanupCronStats(t *testing.T) {
 	err = ds.CleanupCronStats(ctx)
 	require.NoError(t, err)
 
-	stats = []fleet.CronStats{}
-	err = sqlx.SelectContext(ctx, ds.reader, &stats, `SELECT * FROM cron_stats ORDER BY id`)
+	stats = []testCronStats{}
+	err = sqlx.SelectContext(ctx, ds.reader(ctx), &stats, `SELECT * FROM cron_stats ORDER BY id`)
 	require.NoError(t, err)
 	require.Len(t, stats, len(cases)-1) // case[7] was deleted because it exceeded max age
 	for i, c := range cases {
@@ -250,12 +277,12 @@ func TestUpdateAllCronStatsForInstance(t *testing.T) {
 
 	for _, c := range cases {
 		stmt := `INSERT INTO cron_stats (stats_type, name, instance, status) VALUES (?, ?, ?, ?)`
-		_, err := ds.writer.ExecContext(ctx, stmt, fleet.CronStatsTypeScheduled, c.schedName, c.instance, c.status)
+		_, err := ds.writer(ctx).ExecContext(ctx, stmt, fleet.CronStatsTypeScheduled, c.schedName, c.instance, c.status)
 		require.NoError(t, err)
 	}
 
-	var stats []fleet.CronStats
-	err := sqlx.SelectContext(ctx, ds.reader, &stats, `SELECT * FROM cron_stats ORDER BY id`)
+	var stats []testCronStats
+	err := sqlx.SelectContext(ctx, ds.reader(ctx), &stats, `SELECT * FROM cron_stats ORDER BY id`)
 	require.NoError(t, err)
 	require.Len(t, stats, len(cases))
 	for i, s := range stats {
@@ -267,8 +294,8 @@ func TestUpdateAllCronStatsForInstance(t *testing.T) {
 	err = ds.UpdateAllCronStatsForInstance(ctx, "inst1", fleet.CronStatsStatusPending, fleet.CronStatsStatusCanceled)
 	require.NoError(t, err)
 
-	stats = []fleet.CronStats{}
-	err = sqlx.SelectContext(ctx, ds.reader, &stats, `SELECT * FROM cron_stats ORDER BY id`)
+	stats = []testCronStats{}
+	err = sqlx.SelectContext(ctx, ds.reader(ctx), &stats, `SELECT * FROM cron_stats ORDER BY id`)
 	require.NoError(t, err)
 	require.Len(t, stats, len(cases))
 	for i, c := range cases {

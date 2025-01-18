@@ -4,10 +4,26 @@
 
 import * as SQLite from "wa-sqlite";
 
+/** Creates a single UI friendly string out of chrome tables that return multiple warnings */
+const CONCAT_CHROME_WARNINGS = (warnings: ChromeWarning[]): string => {
+  const warningStrings = warnings.map(
+    (warning) => `Column: ${warning.column} - ${warning.error_message}`
+  );
+  return warningStrings.join("\n");
+};
 class cursorState {
   rowIndex: number;
-  rows: Record<string, string | number>[];
-  error: any;
+  rows: Record<string, string>[];
+}
+
+interface ChromeWarning {
+  column: string;
+  error_message: string;
+}
+interface ChromeResponse {
+  data: Record<string, string>[];
+  /** Manually add errors in catch response if table requires requests to multiple APIs */
+  warnings?: ChromeWarning[];
 }
 
 export default abstract class Table implements SQLiteModule {
@@ -16,22 +32,24 @@ export default abstract class Table implements SQLiteModule {
   name: string;
   columns: string[];
   cursorStates: Map<number, cursorState>;
+  warnings?: ChromeWarning[];
 
   abstract generate(
     idxNum: number,
     idxString: string,
     values: Array<number>
-  ): Promise<Record<string, string | number>[]>;
+  ): Promise<ChromeResponse>;
 
-  constructor(sqlite3: SQLiteAPI, db: number) {
+  constructor(sqlite3: SQLiteAPI, db: number, warnings?: ChromeWarning[]) {
     this.sqlite3 = sqlite3;
     this.db = db;
     this.cursorStates = new Map();
+    this.warnings = warnings;
   }
 
   // This is replaced by wa-sqlite when SQLite is loaded up, but missing from the SQLiteModule
   // definition. We add it here to make Typescript happy.
-  handleAsync(f: () => Promise<number>): Promise<number> {
+  handleAsync(_: () => Promise<number>): number {
     throw new Error("should be replaced in build");
   }
 
@@ -42,37 +60,37 @@ export default abstract class Table implements SQLiteModule {
     appData: any, // Application data passed to `SQLiteAPI.create_module`.
     argv: Array<string>,
     pVTab: number,
-    pzString: { set: (arg0: string) => void }
-  ): number | Promise<number> {
+    pzErr: DataView,
+  ): number {
     // Register the table schema.
     const sql = `CREATE TABLE ${this.name} (${this.columns.join(",")})`;
-    pzString.set(sql);
+    this.sqlite3.declare_vtab(db, sql);
     return SQLite.SQLITE_OK;
   }
 
   xBestIndex(
     pVTab: number,
     indexInfo: SQLiteModuleIndexInfo
-  ): number | Promise<number> {
+  ): number {
     // In the future we might be able to use this for some tables to optimize queries.
     return SQLite.SQLITE_OK;
   }
 
-  xDisconnect(pVTab: number): number | Promise<number> {
+  xDisconnect(pVTab: number): number {
     return SQLite.SQLITE_OK;
   }
 
-  xDestroy(pVTab: number): number | Promise<number> {
+  xDestroy(pVTab: number): number {
     return SQLite.SQLITE_OK;
   }
 
-  xOpen(pVTab: number, pCursor: number): number | Promise<number> {
+  xOpen(pVTab: number, pCursor: number): number {
     // Initialize a new cursor state (called at the beginning of a query to the table).
     this.cursorStates.set(pCursor, new cursorState());
     return SQLite.SQLITE_OK;
   }
 
-  xClose(pCursor: number): number | Promise<number> {
+  xClose(pCursor: number): number {
     // Clean up the cursor state (called when the query completes). Important that we do this so
     // that the resources don't remain allocated after the query completes!
     this.cursorStates.delete(pCursor);
@@ -84,38 +102,48 @@ export default abstract class Table implements SQLiteModule {
     idxNum: number,
     idxStr: string | null,
     values: Array<number>
-  ): Promise<number> {
+  ): number {
     // Generate the actual query results here during this filter call. Store them in the cursor state
     // so that SQLite can request each row and column.
     return this.handleAsync(async () => {
       const cursorState = this.cursorStates.get(pCursor);
       cursorState.rowIndex = 0;
       try {
-        cursorState.rows = await this.generate(idxNum, idxStr, values);
+        const tableDataReturned = await this.generate(idxNum, idxStr, values);
+
+        // Set warnings to this.warnings for database to surface in UI
+        if (tableDataReturned.warnings) {
+          globalThis.DB.warnings = []; // Reset warnings
+          globalThis.DB.warnings = CONCAT_CHROME_WARNINGS(
+            tableDataReturned.warnings
+          );
+        }
+        cursorState.rows = tableDataReturned.data;
       } catch (err) {
-        // Throwing here doesn't seem to work as expected in testing (the error doesn't seem to be
-        // thrown in away that it can be caught appropriately), so instead we save the error and
-        // throw in xEof.
-        cursorState.error = err;
+        // We cannot throw inside SQLITE function because it may cause the wasm stack to run out of memory.
+        // See: https://github.com/rhashimoto/wa-sqlite/issues/156#issuecomment-1942477704
+        console.warn("Error generating table data: %s", err);
+        return SQLite.SQLITE_ERROR;
       }
       return SQLite.SQLITE_OK;
     });
   }
 
-  xNext(pCursor: number): number | Promise<number> {
+  xNext(pCursor: number): number {
     // Advance the row index for the cursor.
     const cursorState = this.cursorStates.get(pCursor);
+    if (!cursorState || !cursorState.rows) {
+      return SQLite.SQLITE_ERROR;
+    }
     cursorState.rowIndex += 1;
     return SQLite.SQLITE_OK;
   }
 
-  xEof(pCursor: number): number | Promise<number> {
+  xEof(pCursor: number): number {
     // Check whether we've returned all rows (cursor index is beyond number of rows).
     const cursorState = this.cursorStates.get(pCursor);
-    // Throw any error saved in the cursor state (because throwing in xFilter doesn't seem to work
-    // correctly with async code).
-    if (cursorState.error) {
-      throw cursorState.error;
+    if (!cursorState || !cursorState.rows) {
+      return 1;
     }
     return Number(cursorState.rowIndex >= cursorState.rows.length);
   }
@@ -124,7 +152,7 @@ export default abstract class Table implements SQLiteModule {
     pCursor: number,
     pContext: number,
     iCol: number
-  ): number | Promise<number> {
+  ): number {
     // Get the generated rows for this cursor.
     const cursorState = this.cursorStates.get(pCursor);
     // Get the current row.
@@ -139,11 +167,11 @@ export default abstract class Table implements SQLiteModule {
 
   xRowid(
     pCursor: number,
-    pRowid: { set: (arg0: number) => void }
-  ): number | Promise<number> {
+    pRowid: DataView,
+  ): number {
     // Get the current row index.
     const cursorState = this.cursorStates.get(pCursor);
-    pRowid.set(cursorState.rowIndex);
+    pRowid.setBigInt64(0, BigInt(cursorState.rowIndex));
     return SQLite.SQLITE_OK;
   }
 }

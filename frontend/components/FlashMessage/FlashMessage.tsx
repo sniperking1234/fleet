@@ -3,12 +3,7 @@ import classnames from "classnames";
 
 import { INotification } from "interfaces/notification";
 // @ts-ignore
-import FleetIcon from "components/icons/FleetIcon";
-import Button from "components/buttons/Button";
-
-import CloseIcon from "../../../assets/images/icon-close-white-16x16@2x.png";
-import CloseIconBlack from "../../../assets/images/icon-close-fleet-black-16x16@2x.png";
-import ErrorIcon from "../../../assets/images/icon-error-white-16x16@2x.png";
+import Icon from "components/Icon/Icon";
 
 const baseClass = "flash-message";
 
@@ -18,9 +13,7 @@ export interface IFlashMessage {
   isPersistent?: boolean;
   className?: string;
   onRemoveFlash: () => void;
-  onUndoActionClick?: (
-    value: () => void
-  ) => (evt: React.MouseEvent<HTMLButtonElement, MouseEvent>) => void;
+  pathname?: string;
 }
 
 const FlashMessage = ({
@@ -29,9 +22,10 @@ const FlashMessage = ({
   isPersistent,
   className,
   onRemoveFlash,
-  onUndoActionClick,
+  pathname,
 }: IFlashMessage): JSX.Element | null => {
-  const { alertType, isVisible, message, undoAction } = notification || {};
+  const { alertType, isVisible, message, persistOnPageChange } =
+    notification || {};
   const baseClasses = classnames(
     baseClass,
     className,
@@ -64,40 +58,44 @@ const FlashMessage = ({
     return undefined; // No cleanup when we don't set a timeout.
   }, [notification, alertType, isVisible, setHide]);
 
+  useEffect(() => {
+    if (!persistOnPageChange) {
+      setHide(true);
+    }
+    // intentionally omit persistOnPageChange from dependencies to prevent hiding during initial
+    // update of the notification prop from its default empty value
+  }, [pathname]);
+
   if (hide || !isVisible) {
     return null;
   }
 
   return (
-    <div className={baseClasses} id={baseClasses}>
-      <div className={`${baseClass}__content`}>
-        {alertType === "success" ? (
-          <FleetIcon name="success-check" />
-        ) : (
-          <img alt="error icon" src={ErrorIcon} />
-        )}
-        <span>{message}</span>
-        {onUndoActionClick && undoAction && (
-          <Button
-            className={`${baseClass}__undo`}
-            variant="unstyled"
-            onClick={onUndoActionClick(undoAction)}
-          >
-            Undo
-          </Button>
-        )}
-      </div>
-      <div className={`${baseClass}__action`}>
-        <div className={`${baseClass}__ex`}>
-          <button
-            className={`${baseClass}__remove ${baseClass}__remove--${alertType} button--unstyled`}
-            onClick={onRemoveFlash}
-          >
-            <img
-              src={alertType === "warning-filled" ? CloseIconBlack : CloseIcon}
-              alt="close icon"
-            />
-          </button>
+    <div className={"flash-message-container"}>
+      <div className={baseClasses} id={baseClasses}>
+        <div className={`${baseClass}__content`}>
+          <Icon
+            name={alertType === "success" ? "success" : "error"}
+            color="core-fleet-white"
+          />
+          <span>{message}</span>
+        </div>
+        <div className={`${baseClass}__action`}>
+          <div className={`${baseClass}__ex`}>
+            <button
+              className={`${baseClass}__remove ${baseClass}__remove--${alertType} button--unstyled`}
+              onClick={onRemoveFlash}
+            >
+              <Icon
+                name="close"
+                color={
+                  alertType === "warning-filled"
+                    ? "core-fleet-black"
+                    : "core-fleet-white"
+                }
+              />
+            </button>
+          </div>
         </div>
       </div>
     </div>

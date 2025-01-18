@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"testing"
+	"time"
 
 	"github.com/fleetdm/fleet/v4/server/fleet"
 	"github.com/stretchr/testify/assert"
@@ -52,7 +53,9 @@ func TestDeletePack(t *testing.T) {
 			Disabled:    false,
 		}, true, nil
 	}
-	ds.NewActivityFunc = func(ctx context.Context, user *fleet.User, activity fleet.ActivityDetails) error {
+	ds.NewActivityFunc = func(
+		ctx context.Context, user *fleet.User, activity fleet.ActivityDetails, details []byte, createdAt time.Time,
+	) error {
 		return nil
 	}
 
@@ -78,11 +81,11 @@ func TestDeleteQuery(t *testing.T) {
 	_, ds := runServerWithMockedDS(t)
 
 	var deletedQuery string
-	ds.DeleteQueryFunc = func(ctx context.Context, name string) error {
+	ds.DeleteQueryFunc = func(ctx context.Context, teamID *uint, name string) error {
 		deletedQuery = name
 		return nil
 	}
-	ds.QueryByNameFunc = func(ctx context.Context, name string, opts ...fleet.OptionalArg) (*fleet.Query, error) {
+	ds.QueryByNameFunc = func(ctx context.Context, teamID *uint, name string) (*fleet.Query, error) {
 		if name != "query1" {
 			return nil, nil
 		}
@@ -95,7 +98,9 @@ func TestDeleteQuery(t *testing.T) {
 			ObserverCanRun: false,
 		}, nil
 	}
-	ds.NewActivityFunc = func(ctx context.Context, user *fleet.User, activity fleet.ActivityDetails) error {
+	ds.NewActivityFunc = func(
+		ctx context.Context, user *fleet.User, activity fleet.ActivityDetails, details []byte, createdAt time.Time,
+	) error {
 		return nil
 	}
 

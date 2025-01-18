@@ -1,48 +1,43 @@
 import React from "react";
 import Icon from "components/Icon";
+import { ScheduledQueryablePlatform } from "interfaces/platform";
 
 interface IPlatformCellProps {
-  value: string[];
+  platforms: ScheduledQueryablePlatform[];
 }
 
 const baseClass = "platform-cell";
 
-const ICONS: Record<string, "darwin" | "linux" | "windows"> = {
+const ICONS: Record<string, ScheduledQueryablePlatform> = {
   darwin: "darwin",
-  linux: "linux",
   windows: "windows",
+  linux: "linux",
 };
 
-const DISPLAY_ORDER = [
+const DISPLAY_ORDER: ScheduledQueryablePlatform[] = [
   "darwin",
-  "linux",
   "windows",
-  // "None",
-  // "Invalid query",
+  "linux",
 ];
 
-const PlatformCell = ({
-  value: platforms,
-}: IPlatformCellProps): JSX.Element => {
-  const orderedList = DISPLAY_ORDER.filter((platform) =>
-    platforms.includes(platform)
-  );
+const PlatformCell = ({ platforms }: IPlatformCellProps): JSX.Element => {
+  let orderedList: ScheduledQueryablePlatform[] = [];
+  orderedList = platforms.length
+    ? // if no platforms, interpret as targeting all schedule-targetable platforms
+      DISPLAY_ORDER.filter((platform) => platforms.includes(platform))
+    : DISPLAY_ORDER;
   return (
-    <span className={`${baseClass}__wrapper`}>
-      {orderedList.length ? (
-        orderedList.map((platform) => {
-          return ICONS[platform] ? (
-            <Icon
-              className={`${baseClass}__icon`}
-              name={ICONS[platform]}
-              size="small"
-              key={ICONS[platform]}
-            />
-          ) : null;
-        })
-      ) : (
-        <span className={`${baseClass}__muted`}>---</span>
-      )}
+    <span className={`${baseClass}__wrapper`} data-testid="icons">
+      {orderedList.map((platform) => {
+        return ICONS[platform] ? (
+          <Icon
+            className={`${baseClass}__icon`}
+            name={ICONS[platform]}
+            size="small"
+            key={ICONS[platform]}
+          />
+        ) : null;
+      })}
     </span>
   );
 };

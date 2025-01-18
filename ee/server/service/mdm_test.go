@@ -6,24 +6,33 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/fleetdm/fleet/v4/server/config"
+	"github.com/fleetdm/fleet/v4/server/authz"
 	"github.com/fleetdm/fleet/v4/server/fleet"
+	"github.com/fleetdm/fleet/v4/server/mdm"
 	"github.com/fleetdm/fleet/v4/server/mdm/apple/mobileconfig"
 	"github.com/fleetdm/fleet/v4/server/mock"
 	"github.com/fleetdm/fleet/v4/server/ptr"
+	"github.com/fleetdm/fleet/v4/server/test"
+	"github.com/jmoiron/sqlx"
+	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
 
 func setup(t *testing.T) (*mock.Store, *Service) {
 	ds := new(mock.Store)
+
+	ds.GetAllMDMConfigAssetsByNameFunc = func(ctx context.Context, assetNames []fleet.MDMAssetName,
+		_ sqlx.QueryerContext) (map[fleet.MDMAssetName]fleet.MDMConfigAsset, error) {
+		return map[fleet.MDMAssetName]fleet.MDMConfigAsset{
+			fleet.MDMAssetCACert:   {Value: []byte(testCert)},
+			fleet.MDMAssetCAKey:    {Value: []byte(testKey)},
+			fleet.MDMAssetAPNSKey:  {Value: []byte(testKey)},
+			fleet.MDMAssetAPNSCert: {Value: []byte(testCert)},
+		}, nil
+	}
+
 	svc := &Service{
 		ds: ds,
-		config: config.FleetConfig{
-			MDM: config.MDMConfig{
-				AppleSCEPCertBytes: testCert,
-				AppleSCEPKeyBytes:  testKey,
-			},
-		},
 	}
 	return ds, svc
 }
@@ -33,7 +42,11 @@ func TestMDMAppleEnableFileVaultAndEscrow(t *testing.T) {
 
 	t.Run("fails if SCEP is not configured", func(t *testing.T) {
 		ds := new(mock.Store)
-		svc := &Service{ds: ds, config: config.FleetConfig{}}
+		svc := &Service{ds: ds}
+		ds.GetAllMDMConfigAssetsByNameFunc = func(ctx context.Context, assetNames []fleet.MDMAssetName,
+			_ sqlx.QueryerContext) (map[fleet.MDMAssetName]fleet.MDMConfigAsset, error) {
+			return nil, nil
+		}
 		err := svc.MDMAppleEnableFileVaultAndEscrow(ctx, nil)
 		require.Error(t, err)
 	})
@@ -55,7 +68,7 @@ func TestMDMAppleEnableFileVaultAndEscrow(t *testing.T) {
 		ds.NewMDMAppleConfigProfileFunc = func(ctx context.Context, p fleet.MDMAppleConfigProfile) (*fleet.MDMAppleConfigProfile, error) {
 			require.Equal(t, &teamID, p.TeamID)
 			require.Equal(t, p.Identifier, mobileconfig.FleetFileVaultPayloadIdentifier)
-			require.Equal(t, p.Name, "Disk encryption")
+			require.Equal(t, p.Name, mdm.FleetFileVaultProfileName)
 			require.Contains(t, string(p.Mobileconfig), `MIID6DCCAdACFGX99Sw4aF2qKGLucoIWQRAXHrs1MA0GCSqGSIb3DQEBCwUAMDUxEzARBgNVBAoMClJlZGlzIFRlc3QxHjAcBgNVBAMMFUNlcnRpZmljYXRlIEF1dGhvcml0eTAeFw0yMTEwMTkxNzM0MzlaFw0yMjEwMTkxNzM0MzlaMCwxEzARBgNVBAoMClJlZGlzIFRlc3QxFTATBgNVBAMMDEdlbmVyaWMtY2VydDCCASIwDQYJKoZIhvcNAQEBBQADggEPADCCAQoCggEBAKSHcH8EjSvp3Nm4IHAFxG9DZm8+0h1BwU0OX0VHcJ+Cf+f6h0XYMcMo9LFEpnUJRRMjKrM4mkI75NIIufNBN+GrtqqTPTid8wfOGu/Ufa5EEU1hb2j7AiMlpM6i0+ZysXSNo+Vc/cNZT0PXfyOtJnYm6p9WZM84ID1t2ea0bLwC12cTKv5oybVGtJHh76TRxAR3FeQ9+SY30vUAxYm6oWyYho8rRdKtUSe11pXj6OhxxfTZnsSWn4lo0uBpXai63XtieTVpz74htSNC1bunIGv7//m5F60sH5MrF5JSkPxfCfgqski84ICDSRNlvpT+eMPiygAAJ8zY8wYUXRYFYTUCAwEAATANBgkqhkiG9w0BAQsFAAOCAgEAAAw+6Uz2bAcXgQ7fQfdOm+T6FLRBcr8PD4ajOvSu/T+HhVVjE26Qt2IBwFEYve2FvDxrBCF8aQYZcyQqnP8bdKebnWAaqL8BbTwLWW+fDuZLO2b4QHjAEdEKKdZC5/FRpQrkerf5CCPTHE+5M17OZg41wdVYnCEwJOkP5pUAVsmwtrSwVeIquy20TZO0qbscDQETf7NIJgW0IXg82wBe53Rv4/wL3Ybq13XVRGYiJrwpaNTfUNgsDWqgwlQ5L2GOLDgg8S2NoF9mWVgCGSp3a2eHW+EmBRQ1OP6EYQtIhKdGLrSndAOMJ2ER1pgHWUFKkWQaZ9i37Dx2j7P5c4/XNeVozcRQcLwKwN+n8k+bwIYcTX0HMOVFYm+WiFi/gjI860Tx853Sc0nkpOXmBCeHSXigGUscgjBYbmJz4iExXuwgawLXKLDKs0yyhLDnKEjmx/Vhz03JpsVFJ84kSWkTZkYsXiG306TxuJCX9zAt1z+6ClieTTGiFY+D8DfkC4H82rlPEtImpZ6rInsMUlAykImpd58e4PMSa+w/wSHXDvwFP7py1Gvz3XvcbGLmpBXblxTUpToqC7zSQJhHOMBBt6XnhcRwd6G9Vj/mQM3FvJIrxtKk8O7FwMJloGivS85OEzCIur5A+bObXbM2pcI8y4ueHE4NtElRBwn859AdB2k=`)
 			return nil, nil
 		}
@@ -79,7 +92,6 @@ func TestMDMAppleDisableFileVaultAndEscrow(t *testing.T) {
 	err := svc.MDMAppleDisableFileVaultAndEscrow(context.Background(), ptr.Uint(wantTeamID))
 	require.NoError(t, err)
 	require.True(t, ds.DeleteMDMAppleConfigProfileByTeamAndIdentifierFuncInvoked)
-
 }
 
 var (
@@ -139,3 +151,46 @@ b1xn1jGQd/o0xFf9ojpDNy6vNojidQGHh6E3h0GYvxbnQmVNq5U=
 // prevent static analysis tools from raising issues due to detection of
 // private key in code.
 func testingKey(s string) string { return strings.ReplaceAll(s, "TESTING KEY", "PRIVATE KEY") }
+
+func TestCountABMTokensAuth(t *testing.T) {
+	t.Parallel()
+	ds := new(mock.Store)
+	ctx := context.Background()
+	authorizer, err := authz.NewAuthorizer()
+	require.NoError(t, err)
+	svc := Service{ds: ds, authz: authorizer}
+
+	ds.GetABMTokenCountFunc = func(ctx context.Context) (int, error) {
+		return 5, nil
+	}
+
+	t.Run("CountABMTokens", func(t *testing.T) {
+		cases := []struct {
+			desc              string
+			user              *fleet.User
+			shoudFailWithAuth bool
+		}{
+			{"no role", test.UserNoRoles, true},
+			{"gitops can read", test.UserGitOps, false},
+			{"maintainer can read", test.UserMaintainer, false},
+			{"observer can read", test.UserObserver, false},
+			{"observer+ can read", test.UserObserverPlus, false},
+			{"admin can read", test.UserAdmin, false},
+			{"tm1 gitops cannot read", test.UserTeamGitOpsTeam1, true},
+			{"tm1 maintainer can read", test.UserTeamMaintainerTeam1, false},
+			{"tm1 observer can read", test.UserTeamObserverTeam1, false},
+			{"tm1 observer+ can read", test.UserTeamObserverPlusTeam1, false},
+			{"tm1 admin can read", test.UserTeamAdminTeam1, false},
+		}
+		for _, c := range cases {
+			t.Run(c.desc, func(t *testing.T) {
+				ctx = test.UserContext(ctx, c.user)
+				count, err := svc.CountABMTokens(ctx)
+				checkAuthErr(t, c.shoudFailWithAuth, err)
+				if !c.shoudFailWithAuth {
+					assert.EqualValues(t, 5, count)
+				}
+			})
+		}
+	})
+}

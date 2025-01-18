@@ -12,7 +12,8 @@ export interface IRevealButtonProps {
   caretPosition?: "before" | "after";
   autofocus?: boolean;
   disabled?: boolean;
-  tooltipHtml?: string;
+  tooltipContent?: React.ReactNode;
+  disabledTooltipContent?: React.ReactNode;
   onClick?:
     | ((value?: any) => void)
     | ((evt: React.MouseEvent<HTMLButtonElement>) => void);
@@ -28,7 +29,8 @@ const RevealButton = ({
   caretPosition,
   autofocus,
   disabled,
-  tooltipHtml,
+  tooltipContent,
+  disabledTooltipContent,
   onClick,
 }: IRevealButtonProps): JSX.Element => {
   const classNames = classnames(baseClass, className);
@@ -36,26 +38,25 @@ const RevealButton = ({
   const buttonContent = () => {
     const text = isShowing ? hideText : showText;
 
-    const buttonText = tooltipHtml ? (
-      <TooltipWrapper tipContent={tooltipHtml}>{text}</TooltipWrapper>
-    ) : (
-      text
-    );
+    const buttonText =
+      tooltipContent && !disabled ? (
+        <TooltipWrapper tipContent={tooltipContent}>{text}</TooltipWrapper>
+      ) : (
+        text
+      );
 
     return (
       <>
         {caretPosition === "before" && (
           <Icon
-            name="chevron"
-            direction={isShowing ? "right" : "down"}
+            name={isShowing ? "chevron-down" : "chevron-right"}
             color="core-fleet-blue"
           />
         )}
         {buttonText}
         {caretPosition === "after" && (
           <Icon
-            name="chevron"
-            direction={isShowing ? "up" : "down"}
+            name={isShowing ? "chevron-up" : "chevron-down"}
             color="core-fleet-blue"
           />
         )}
@@ -63,7 +64,7 @@ const RevealButton = ({
     );
   };
 
-  return (
+  const button = (
     <Button
       variant="text-icon"
       className={classNames}
@@ -74,6 +75,22 @@ const RevealButton = ({
       {buttonContent()}
     </Button>
   );
+
+  if (disabled && disabledTooltipContent) {
+    // wrap the tooltip around the Button so it works while disabled
+    return (
+      <TooltipWrapper
+        tipContent={disabledTooltipContent}
+        showArrow
+        underline={false}
+        position="right"
+        tipOffset={12}
+      >
+        {button}
+      </TooltipWrapper>
+    );
+  }
+  return button;
 };
 
 export default RevealButton;

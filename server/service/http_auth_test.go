@@ -3,11 +3,12 @@ package service
 import (
 	"bytes"
 	"context"
+	"crypto/rand"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
-	"io/ioutil"
 	"net/http"
 	"net/http/httptest"
 	"strconv"
@@ -99,7 +100,7 @@ func TestLogin(t *testing.T) {
 		require.Nil(t, err)
 		assert.Equal(t, http.StatusOK, resp.StatusCode, strconv.Itoa(tt.status))
 
-		_, err = ioutil.ReadAll(resp.Body)
+		_, err = io.ReadAll(resp.Body)
 		assert.Nil(t, err)
 
 		// ensure that our user's session was deleted from the store
@@ -163,7 +164,13 @@ func setupAuthTest(t *testing.T) (fleet.Datastore, map[string]fleet.User, *httpt
 		user := usersMap[email]
 		return &user, nil
 	}
-	ds.NewSessionFunc = func(ctx context.Context, userID uint, sessionKey string) (*fleet.Session, error) {
+	ds.NewSessionFunc = func(ctx context.Context, userID uint, sessionKeySize int) (*fleet.Session, error) {
+		key := make([]byte, sessionKeySize)
+		_, err := rand.Read(key)
+		if err != nil {
+			return nil, err
+		}
+		sessionKey := base64.StdEncoding.EncodeToString(key)
 		session := &fleet.Session{
 			UserID:     userID,
 			Key:        sessionKey,
@@ -172,14 +179,23 @@ func setupAuthTest(t *testing.T) (fleet.Datastore, map[string]fleet.User, *httpt
 		sessions[sessionKey] = session
 		return session, nil
 	}
-	ds.NewActivityFunc = func(ctx context.Context, user *fleet.User, activity fleet.ActivityDetails) error {
+	ds.AppConfigFunc = func(ctx context.Context) (*fleet.AppConfig, error) {
+		return &fleet.AppConfig{}, nil
+	}
+	ds.NewActivityFunc = func(
+		ctx context.Context, user *fleet.User, activity fleet.ActivityDetails, details []byte, createdAt time.Time,
+	) error {
 		return nil
 	}
 	return ds, usersMap, server
 }
 
 func getTestAdminToken(t *testing.T, server *httptest.Server) string {
-	testUser := testUsers["admin1"]
+	return getTestUserToken(t, server, "admin1")
+}
+
+func getTestUserToken(t *testing.T, server *httptest.Server, testUserId string) string {
+	testUser := testUsers[testUserId]
 
 	params := loginRequest{
 		Email:    testUser.Email,

@@ -1,59 +1,82 @@
-import React from "react";
+import React, { ReactNode } from "react";
 import classnames from "classnames";
-import ReactTooltip from "react-tooltip";
 import { DEFAULT_EMPTY_CELL_VALUE } from "utilities/constants";
+import TooltipWrapper from "components/TooltipWrapper";
+import { capitalize } from "lodash";
+
+const baseClass = "status-indicator";
+
+export type IIndicatorValue = "success" | "warning" | "error" | "indeterminate";
 
 interface IStatusIndicatorProps {
+  /** Only the first letter of value will be capitalized by the component.
+   * NOTE: Do not rely on the value prop to determine the status indicator. Use the
+   * `indicator` prop instead.
+   */
   value: string;
+  /** The indicator type allows for showing the desired indicator.
+   * NOTE: use this instead relying on the `value` prop to determine the indicator.
+   */
+  indicator?: IIndicatorValue;
   tooltip?: {
-    id: number;
-    tooltipText: string;
+    tooltipText: ReactNode;
     position?: "top" | "bottom";
   };
+  /**
+   * @deprecated Use `indicator` instead to show the desired indicator.
+   */
+  customIndicatorType?: string;
+  className?: string;
 }
 
-const generateClassTag = (rawValue: string): string => {
+const generateIndicatorStateClassTag = (
+  rawValue: string,
+  customIndicatorType?: string
+): string => {
   if (rawValue === DEFAULT_EMPTY_CELL_VALUE) {
     return "indeterminate";
   }
-  return rawValue.replace(" ", "-").toLowerCase();
+  const prefix = customIndicatorType ? `${customIndicatorType}-` : "";
+  return `${prefix}${rawValue.replace(" ", "-").toLowerCase()}`;
 };
 
 const StatusIndicator = ({
   value,
+  indicator,
   tooltip,
+  customIndicatorType,
+  className,
 }: IStatusIndicatorProps): JSX.Element => {
-  const classTag = generateClassTag(value);
-  const statusClassName = classnames(
-    "status-indicator",
-    `status-indicator--${classTag}`,
-    `status--${classTag}`
+  const indicatorStateClassTag = generateIndicatorStateClassTag(
+    value,
+    customIndicatorType
   );
+
+  const classes = classnames(
+    baseClass,
+    className,
+    `${baseClass}--${indicatorStateClassTag}`,
+    `status--${indicatorStateClassTag}`,
+    indicator ? `${baseClass}--${indicator}` : null
+  );
+
+  const capitalizedValue = capitalize(value);
+
   const indicatorContent = tooltip ? (
-    <>
-      <span
-        className="host-status tooltip tooltip__tooltip-icon"
-        data-tip
-        data-for={`status-${tooltip.id}`}
-        data-tip-disable={false}
-      >
-        {value}
-      </span>
-      <ReactTooltip
-        className="status-tooltip"
-        place={tooltip?.position ? tooltip.position : "top"}
-        type="dark"
-        effect="solid"
-        id={`status-${tooltip.id}`}
-        backgroundColor="#3e4771"
-      >
-        {tooltip.tooltipText}
-      </ReactTooltip>
-    </>
+    <TooltipWrapper
+      position={tooltip?.position ? tooltip.position : "top"}
+      showArrow
+      underline={false}
+      tipContent={tooltip.tooltipText}
+      tipOffset={14}
+    >
+      {capitalizedValue}
+    </TooltipWrapper>
   ) : (
-    <>{value}</>
+    capitalizedValue
   );
-  return <span className={statusClassName}>{indicatorContent}</span>;
+
+  return <span className={classes}>{indicatorContent}</span>;
 };
 
 export default StatusIndicator;

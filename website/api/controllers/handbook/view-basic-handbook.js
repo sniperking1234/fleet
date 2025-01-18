@@ -55,6 +55,7 @@ module.exports = {
       }
     }
 
+
     // Respond with view.
     return {
       path: require('path'),
@@ -63,12 +64,14 @@ module.exports = {
       compiledPagePartialsAppPath: sails.config.builtStaticContent.compiledPagePartialsAppPath,
       pageTitleForMeta: (
         thisPage.title !== 'Readme.md' ? thisPage.title + ' | Fleet handbook'// « custom meta title for this page, if provided in markdown
-        : 'Handbook | Fleet for osquery' // « otherwise we're on the landing page for this section of the site, so we'll follow the title format of other top-level pages
+        : 'Handbook' // « otherwise we're on the landing page for this section of the site, so we'll follow the title format of other top-level pages
       ),
       pageDescriptionForMeta: (
         thisPage.meta.description ? thisPage.meta.description // « custom meta description for this page, if provided in markdown
         : 'View the Fleet handbook.'// « otherwise use a generic description
       ),
+      rituals: sails.config.builtStaticContent.rituals,
+      openPositions: sails.config.builtStaticContent.openPositions,
       algoliaPublicKey: sails.config.custom.algoliaPublicKey,
     };
 

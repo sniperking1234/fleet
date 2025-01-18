@@ -6,7 +6,6 @@ import (
 	"encoding/binary"
 	"errors"
 	"fmt"
-	"io/ioutil"
 	"os"
 )
 
@@ -32,7 +31,7 @@ func MakeMacOSFatExecutable(outPath string, inPaths ...string) error {
 	var inputs []input
 	offset := int64(align)
 	for _, i := range inPaths {
-		data, err := ioutil.ReadFile(i)
+		data, err := os.ReadFile(i)
 		if err != nil {
 			return err
 		}
@@ -78,20 +77,20 @@ func MakeMacOSFatExecutable(outPath string, inPaths ...string) error {
 	} else {
 		hdr = append(hdr, macho.MagicFat)
 	}
-	hdr = append(hdr, uint32(len(inputs)))
+	hdr = append(hdr, uint32(len(inputs))) //nolint:gosec // dismiss G115
 
 	// Build a fat_arch for each input file.
 	for _, i := range inputs {
 		hdr = append(hdr, i.cpu)
 		hdr = append(hdr, i.subcpu)
 		if sixtyfour {
-			hdr = append(hdr, uint32(i.offset>>32)) // big endian
+			hdr = append(hdr, uint32(i.offset>>32)) //nolint:gosec // dismiss G115, big endian
 		}
-		hdr = append(hdr, uint32(i.offset))
+		hdr = append(hdr, uint32(i.offset)) //nolint:gosec // dismiss G115
 		if sixtyfour {
-			hdr = append(hdr, uint32(len(i.data)>>32)) // big endian
+			hdr = append(hdr, uint32(len(i.data)>>32)) //nolint:gosec // dismiss G115, big endian
 		}
-		hdr = append(hdr, uint32(len(i.data)))
+		hdr = append(hdr, uint32(len(i.data))) //nolint:gosec // dismiss G115
 		hdr = append(hdr, alignBits)
 		if sixtyfour {
 			hdr = append(hdr, 0) // reserved

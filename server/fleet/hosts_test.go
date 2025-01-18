@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/WatchBeam/clock"
+	"github.com/fleetdm/fleet/v4/server/ptr"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -47,6 +48,26 @@ func TestHostStatus(t *testing.T) {
 			}
 
 			assert.Equal(t, tt.status, h.Status(mockClock.Now()))
+		})
+	}
+}
+
+func TestHostStatusIsValid(t *testing.T) {
+	for _, tt := range []struct {
+		name     string
+		status   HostStatus
+		expected bool
+	}{
+		{"online", StatusOnline, true},
+		{"offline", StatusOffline, true},
+		{"new", StatusNew, true},
+		{"missing", StatusMissing, true},
+		{"mia", StatusMIA, true}, // As of Fleet 4.15, StatusMIA is deprecated in favor of StatusOffline
+		{"empty", HostStatus(""), false},
+		{"invalid", HostStatus("invalid"), false},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			assert.Equal(t, tt.expected, tt.status.IsValid())
 		})
 	}
 }
@@ -106,6 +127,10 @@ func TestPlatformFromHost(t *testing.T) {
 		},
 		{
 			host:        "gentoo",
+			expPlatform: "linux",
+		},
+		{
+			host:        "tuxedo",
 			expPlatform: "linux",
 		},
 		{
@@ -189,54 +214,172 @@ func TestMDMEnrollmentStatus(t *testing.T) {
 	}
 }
 
-func TestIsEnrolledInThirdPartyMDM(t *testing.T) {
-	for _, tc := range []struct {
-		hostMDM  HostMDM
-		expected bool
+func TestIsEligibleForDEPMigration(t *testing.T) {
+	testCases := []struct {
+		name                    string
+		osqueryHostID           *string
+		depAssignedToFleet      *bool
+		depProfileResponse      DEPAssignProfileResponseStatus
+		enrolledInThirdPartyMDM bool
+		expected                bool
+		expectedManual          bool
+		hostOS                  string
 	}{
 		{
-			hostMDM:  HostMDM{Enrolled: true, Name: WellKnownMDMSimpleMDM},
-			expected: true,
+			name:                    "Eligible for DEP migration",
+			osqueryHostID:           ptr.String("some-id"),
+			depAssignedToFleet:      ptr.Bool(true),
+			depProfileResponse:      DEPAssignProfileResponseSuccess,
+			enrolledInThirdPartyMDM: true,
+			expected:                true,
+			expectedManual:          false,
 		},
 		{
-			hostMDM:  HostMDM{Enrolled: false, Name: WellKnownMDMSimpleMDM},
-			expected: false,
+			name:                    "Not eligible - osqueryHostID nil",
+			osqueryHostID:           nil,
+			depAssignedToFleet:      ptr.Bool(true),
+			depProfileResponse:      DEPAssignProfileResponseSuccess,
+			enrolledInThirdPartyMDM: true,
+			expected:                false,
+			expectedManual:          false,
 		},
 		{
-			hostMDM:  HostMDM{Enrolled: true, Name: WellKnownMDMFleet},
-			expected: false,
+			name:                    "Not eligible - not DEP assigned to Fleet",
+			osqueryHostID:           ptr.String("some-id"),
+			depAssignedToFleet:      ptr.Bool(false),
+			depProfileResponse:      DEPAssignProfileResponseSuccess,
+			enrolledInThirdPartyMDM: true,
+			expected:                false,
+			expectedManual:          false,
 		},
 		{
-			hostMDM:  HostMDM{Enrolled: false, Name: WellKnownMDMFleet},
-			expected: false,
+			name:                    "Not eligible - not enrolled in third-party MDM",
+			osqueryHostID:           ptr.String("some-id"),
+			depAssignedToFleet:      ptr.Bool(true),
+			depProfileResponse:      DEPAssignProfileResponseSuccess,
+			enrolledInThirdPartyMDM: false,
+			expected:                false,
+			expectedManual:          false,
 		},
-	} {
-		require.Equal(t, tc.expected, tc.hostMDM.IsEnrolledInThirdPartyMDM())
+		{
+			name:                    "Not eligible - not DEP assigned and DEP profile failed",
+			osqueryHostID:           ptr.String("some-id"),
+			depAssignedToFleet:      ptr.Bool(false),
+			depProfileResponse:      DEPAssignProfileResponseNotAccessible,
+			enrolledInThirdPartyMDM: true,
+			expected:                false,
+			expectedManual:          true,
+			hostOS:                  "macOS 14.5",
+		},
+		{
+			name:                    "Not eligible - DEP assigned and DEP profile failed",
+			osqueryHostID:           ptr.String("some-id"),
+			depAssignedToFleet:      ptr.Bool(true),
+			depProfileResponse:      DEPAssignProfileResponseFailed,
+			enrolledInThirdPartyMDM: true,
+			expected:                false,
+			expectedManual:          false,
+		},
+		{
+			name:                    "Not eligible - DEP assigned but not response yet",
+			osqueryHostID:           ptr.String("some-id"),
+			depAssignedToFleet:      ptr.Bool(true),
+			depProfileResponse:      "",
+			enrolledInThirdPartyMDM: true,
+			expected:                false,
+			expectedManual:          false,
+		},
+		{
+			name:                    "Not eligible - DEP assigned but not accessible",
+			osqueryHostID:           ptr.String("some-id"),
+			depAssignedToFleet:      ptr.Bool(true),
+			depProfileResponse:      DEPAssignProfileResponseNotAccessible,
+			enrolledInThirdPartyMDM: true,
+			expected:                false,
+			expectedManual:          false,
+		},
+		{
+			name:                    "Manual migration eligible - enrolled in 3rd party, but not DEP",
+			osqueryHostID:           ptr.String("some-id"),
+			depAssignedToFleet:      ptr.Bool(false),
+			depProfileResponse:      "",
+			enrolledInThirdPartyMDM: true,
+			expected:                false,
+			expectedManual:          true,
+			hostOS:                  "macOS 14.5",
+		},
+		{
+			name:                    "Manual migration ineligible - enrolled in 3rd party, not DEP, but OS version too low",
+			osqueryHostID:           ptr.String("some-id"),
+			depAssignedToFleet:      ptr.Bool(false),
+			depProfileResponse:      "",
+			enrolledInThirdPartyMDM: true,
+			expected:                false,
+			expectedManual:          false,
+			hostOS:                  "macOS 13.9",
+		},
+	}
+
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			host := &Host{
+				OsqueryHostID:      tc.osqueryHostID,
+				DEPAssignedToFleet: tc.depAssignedToFleet,
+				OSVersion:          tc.hostOS,
+			}
+
+			mdmInfo := &HostMDM{
+				Enrolled:               tc.enrolledInThirdPartyMDM,
+				Name:                   "Some MDM",
+				DEPProfileAssignStatus: ptr.String(string(tc.depProfileResponse)),
+			}
+
+			require.Equal(t, tc.expected, IsEligibleForDEPMigration(host, mdmInfo, false))
+			manual, err := IsEligibleForManualMigration(host, mdmInfo, false)
+			require.NoError(t, err)
+			require.Equal(t, tc.expectedManual, manual)
+		})
 	}
 }
 
-func TestIsDEPCapable(t *testing.T) {
-	for _, tc := range []struct {
-		hostMDM  HostMDM
+func TestHasJSONProfileAssigned(t *testing.T) {
+	testCases := []struct {
+		name     string
+		hostMDM  *HostMDM
 		expected bool
 	}{
 		{
-			hostMDM:  HostMDM{IsServer: false, InstalledFromDep: true},
+			name:     "nil HostMDM",
+			hostMDM:  nil,
+			expected: false,
+		},
+		{
+			name: "nil DEPProfileAssignStatus",
+			hostMDM: &HostMDM{
+				DEPProfileAssignStatus: nil,
+			},
+			expected: false,
+		},
+		{
+			name: "DEPProfileAssignStatus not successful",
+			hostMDM: &HostMDM{
+				DEPProfileAssignStatus: new(string),
+			},
+			expected: false,
+		},
+		{
+			name: "DEPProfileAssignStatus successful",
+			hostMDM: &HostMDM{
+				DEPProfileAssignStatus: ptr.String(string(DEPAssignProfileResponseSuccess)),
+			},
 			expected: true,
 		},
-		{
-			hostMDM:  HostMDM{IsServer: true, InstalledFromDep: true},
-			expected: false,
-		},
-		{
-			hostMDM:  HostMDM{IsServer: true, InstalledFromDep: false},
-			expected: false,
-		},
-		{
-			hostMDM:  HostMDM{IsServer: false, InstalledFromDep: false},
-			expected: false,
-		},
-	} {
-		require.Equal(t, tc.expected, tc.hostMDM.IsDEPCapable())
+	}
+
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			result := tc.hostMDM.HasJSONProfileAssigned()
+			require.Equal(t, tc.expected, result)
+		})
 	}
 }

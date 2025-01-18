@@ -5,22 +5,24 @@ import Modal from "components/Modal";
 import Checkbox from "../../../../../components/forms/fields/Checkbox";
 import Button from "../../../../../components/buttons/Button";
 
+const baseClass = "edit-columns-modal";
+
 const useCheckboxListStateManagement = (allColumns, hiddenColumns) => {
   const [columnItems, setColumnItems] = useState(() => {
     return allColumns.map((column) => {
       return {
         name: column.title,
-        accessor: column.accessor,
-        isChecked: !hiddenColumns.includes(column.accessor),
+        id: column.id,
+        isChecked: !hiddenColumns.includes(column.id),
         disableHidden: column.disableHidden,
       };
     });
   });
 
-  const updateColumnItems = (columnAccessor) => {
+  const updateColumnItems = (columnId) => {
     setColumnItems((prevState) => {
       const selectedColumn = columnItems.find(
-        (column) => column.accessor === columnAccessor
+        (column) => column.id === columnId
       );
       const updatedColumn = {
         ...selectedColumn,
@@ -29,9 +31,7 @@ const useCheckboxListStateManagement = (allColumns, hiddenColumns) => {
 
       // this is replacing the column object with the updatedColumn we just created.
       const newState = prevState.map((currentColumn) => {
-        return currentColumn.accessor === columnAccessor
-          ? updatedColumn
-          : currentColumn;
+        return currentColumn.id === columnId ? updatedColumn : currentColumn;
       });
       return newState;
     });
@@ -43,7 +43,7 @@ const useCheckboxListStateManagement = (allColumns, hiddenColumns) => {
 const getHiddenColumns = (columns) => {
   return columns
     .filter((column) => !column.isChecked)
-    .map((column) => column.accessor);
+    .map((column) => column.id);
 };
 
 const EditColumnsModal = ({
@@ -58,22 +58,18 @@ const EditColumnsModal = ({
   );
 
   return (
-    <Modal
-      title="Edit columns"
-      onExit={onCancelColumns}
-      className={"edit-columns-modal"}
-    >
-      <>
+    <Modal title="Edit columns" onExit={onCancelColumns} className={baseClass}>
+      <div className="form">
         <p>Choose which columns you see:</p>
-        <div className={"modal-items"}>
+        <div className={`${baseClass}__column-headers`}>
           {columnItems.map((column) => {
             if (column.disableHidden) return null;
             return (
-              <div key={column.accessor}>
+              <div key={column.id}>
                 <Checkbox
                   name={column.name}
                   value={column.isChecked}
-                  onChange={() => updateColumnItems(column.accessor)}
+                  onChange={() => updateColumnItems(column.id)}
                 >
                   <span>{column.name}</span>
                 </Checkbox>
@@ -84,15 +80,15 @@ const EditColumnsModal = ({
         <div className="modal-cta-wrap">
           <Button
             onClick={() => onSaveColumns(getHiddenColumns(columnItems))}
-            variant={"default"}
+            variant="default"
           >
             Save
           </Button>
-          <Button onClick={onCancelColumns} variant={"inverse"}>
+          <Button onClick={onCancelColumns} variant="inverse">
             Cancel
           </Button>
         </div>
-      </>
+      </div>
     </Modal>
   );
 };

@@ -1,10 +1,12 @@
 package service
 
 import (
+	"encoding/csv"
 	"fmt"
+	"net/url"
+	"strings"
 
 	"github.com/fleetdm/fleet/v4/server/fleet"
-	"github.com/fleetdm/fleet/v4/server/ptr"
 )
 
 // GetHosts retrieves the list of all Hosts
@@ -52,22 +54,27 @@ func (c *Client) translateTransferHostsToIDs(hosts []string, label string, team 
 		translatePayloads = append(translatePayloads, translatedPayload)
 	}
 
-	translatedPayload, err := encodeTranslatedPayload(fleet.TranslatorTypeTeam, team)
-	if err != nil {
-		return nil, 0, 0, err
-	}
-	translatePayloads = append(translatePayloads, translatedPayload)
-
-	params := translatorRequest{List: translatePayloads}
-
-	err = c.authenticatedRequest(&params, verb, path, &responseBody)
-	if err != nil {
-		return nil, 0, 0, err
+	if team != "" {
+		translatedPayload, err := encodeTranslatedPayload(fleet.TranslatorTypeTeam, team)
+		if err != nil {
+			return nil, 0, 0, err
+		}
+		translatePayloads = append(translatePayloads, translatedPayload)
 	}
 
 	var hostIDs []uint
 	var labelID uint
 	var teamID uint
+
+	if len(translatePayloads) == 0 {
+		return hostIDs, labelID, teamID, nil
+	}
+	params := translatorRequest{List: translatePayloads}
+
+	err := c.authenticatedRequest(&params, verb, path, &responseBody)
+	if err != nil {
+		return nil, 0, 0, err
+	}
 
 	for _, payload := range responseBody.List {
 		switch payload.Type {
@@ -96,24 +103,60 @@ func (c *Client) TransferHosts(hosts []string, label string, status, searchQuery
 		return err
 	}
 
+	var teamIDPtr *uint
+	if teamID != 0 {
+		teamIDPtr = &teamID
+	}
 	if len(hosts) != 0 {
 		verb, path := "POST", "/api/latest/fleet/hosts/transfer"
 		var responseBody addHostsToTeamResponse
-		params := addHostsToTeamRequest{TeamID: ptr.Uint(teamID), HostIDs: hostIDs}
+		params := addHostsToTeamRequest{TeamID: teamIDPtr, HostIDs: hostIDs}
 		return c.authenticatedRequest(params, verb, path, &responseBody)
 	}
 
-	var labelIDPtr *uint
+	filter := make(map[string]interface{})
+
 	if label != "" {
-		labelIDPtr = &labelID
+		filter["label_id"] = labelID
+	}
+
+	if status != "" {
+		filter["status"] = fleet.HostStatus(status)
+	}
+
+	if searchQuery != "" {
+		filter["query"] = searchQuery
 	}
 
 	verb, path := "POST", "/api/latest/fleet/hosts/transfer/filter"
 	var responseBody addHostsToTeamByFilterResponse
-	params := addHostsToTeamByFilterRequest{TeamID: ptr.Uint(teamID), Filters: struct {
-		MatchQuery string           `json:"query"`
-		Status     fleet.HostStatus `json:"status"`
-		LabelID    *uint            `json:"label_id"`
-	}{MatchQuery: searchQuery, Status: fleet.HostStatus(status), LabelID: labelIDPtr}}
+	params := addHostsToTeamByFilterRequest{
+		TeamID:  teamIDPtr,
+		Filters: &filter,
+	}
+
 	return c.authenticatedRequest(params, verb, path, &responseBody)
+}
+
+// GetHostsReport returns a report of all hosts.
+//
+// The first row holds the name of the columns and each subsequent row are
+// the column values for each host.
+func (c *Client) GetHostsReport(columns ...string) ([][]string, error) {
+	verb, path := "GET", "/api/latest/fleet/hosts/report"
+	query := make(url.Values)
+	query.Add("format", "csv")
+	if len(columns) > 0 {
+		query.Add("columns", strings.Join(columns, ","))
+	}
+	response, err := c.AuthenticatedDo(verb, path, query.Encode(), nil)
+	if err != nil {
+		return nil, err
+	}
+	csvReader := csv.NewReader(response.Body)
+	records, err := csvReader.ReadAll()
+	if err != nil {
+		return nil, err
+	}
+	return records, nil
 }

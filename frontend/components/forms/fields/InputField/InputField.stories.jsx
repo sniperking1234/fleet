@@ -1,6 +1,3 @@
-import React from "react";
-import { Meta, StoryObj } from "@storybook/react";
-
 import InputField from ".";
 
 const meta = {
@@ -11,3 +8,16 @@ const meta = {
 export default meta;
 
 export const Basic = {};
+
+export const WithCopyEnabled = {
+  args: {
+    enableCopy: true,
+  },
+};
+
+export const WithCopyEnabledInsideInput = {
+  args: {
+    enableCopy: true,
+    copyButtonPosition: "inside",
+  },
+};

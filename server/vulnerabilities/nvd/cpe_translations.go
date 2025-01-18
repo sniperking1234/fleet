@@ -108,10 +108,10 @@ func (r *regexpCache) Get(pattern string) (*regexp.Regexp, error) {
 //
 //	[
 //	  {
-//	    "match": {
+//	    "software": {
 //	      "bundle_identifier": ["com.1password.1password"]
 //	    },
-//	    "translation": {
+//	    "filter": {
 //	      "product": ["1password"],
 //	      "vendor": ["agilebits"]
 //	    }
@@ -215,6 +215,7 @@ type CPETranslation struct {
 	Product  []string `json:"product"`
 	Vendor   []string `json:"vendor"`
 	TargetSW []string `json:"target_sw"`
+	Part     string   `json:"part"`
 	// If Skip is set, no NVD vulnerabilities will be reported for the matching software.
 	Skip bool `json:"skip"`
 }

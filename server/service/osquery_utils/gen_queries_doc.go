@@ -16,21 +16,25 @@ import (
 )
 
 func main() {
-	detailQueriesMap := osquery_utils.GetDetailQueries(context.Background(), config.FleetConfig{
-		Vulnerabilities: config.VulnerabilitiesConfig{
-			DisableWinOSVulnerabilities: false,
+	detailQueriesMap := osquery_utils.GetDetailQueries(context.Background(),
+		config.FleetConfig{
+			Vulnerabilities: config.VulnerabilitiesConfig{
+				DisableWinOSVulnerabilities: false,
+			},
+			App: config.AppConfig{
+				EnableScheduledQueryStats: true,
+			},
 		},
-		App: config.AppConfig{
-			EnableScheduledQueryStats: true,
+		&fleet.AppConfig{MDM: fleet.MDM{EnabledAndConfigured: true}},
+		&fleet.Features{
+			EnableSoftwareInventory: true,
+			EnableHostUsers:         true,
 		},
-	}, nil, &fleet.Features{
-		EnableSoftwareInventory: true,
-		EnableHostUsers:         true,
-	})
+	)
 	var b strings.Builder
 
 	b.WriteString(`<!-- DO NOT EDIT. This document is automatically generated. -->
-# Detail Queries Summary
+# Understanding host vitals
 
 Following is a summary of the detail queries hardcoded in Fleet used to populate the device details:
 
@@ -53,19 +57,28 @@ Following is a summary of the detail queries hardcoded in Fleet used to populate
 
 	for _, q := range detailQueries {
 		fmt.Fprintf(&b, "## %s\n\n", q.name)
+
+		if q.detailQuery.Description != "" {
+			fmt.Fprintf(&b, "- Description: %s\n\n", q.detailQuery.Description)
+		}
+
 		platforms := strings.Join(q.detailQuery.Platforms, ", ")
 		if len(q.detailQuery.Platforms) == 0 {
 			platforms = "all"
 		}
 		fmt.Fprintf(&b, "- Platforms: %s\n\n", platforms)
 		if q.detailQuery.Discovery != "" {
-			fmt.Fprintf(&b, "- Discovery query:\n\n```sql\n%s\n```\n\n", strings.TrimSpace(q.detailQuery.Discovery))
+			fmt.Fprintf(&b, "- Discovery query:\n```sql\n%s\n```\n\n", strings.TrimSpace(q.detailQuery.Discovery))
 		}
-		fmt.Fprintf(&b, "- Query:\n\n```sql\n%s\n```\n\n", strings.TrimSpace(q.detailQuery.Query))
+		fmt.Fprintf(&b, "- Query:\n```sql\n%s\n```\n\n", strings.TrimSpace(q.detailQuery.Query))
 	}
 
-	b.WriteString(`
+	// Footnotes
+	fmt.Fprint(&b, `<br /><br />`)
+	fmt.Fprintf(&b, "[^1]: Software override queries write over the default queries. They are used to populate the software inventory.")
 
+	b.WriteString(`
+<meta name="navSection" value="Dig deeper">
 <meta name="pageOrderInSection" value="1600">`)
 
 	if err := os.WriteFile(os.Args[1], []byte(b.String()), 0600); err != nil {

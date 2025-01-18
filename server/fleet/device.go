@@ -6,6 +6,7 @@ import "time"
 // Desktop to operate (show/hide menu items, etc)
 type DesktopSummary struct {
 	FailingPolicies *uint                `json:"failing_policies_count,omitempty"`
+	SelfService     *bool                `json:"self_service"`
 	Notifications   DesktopNotifications `json:"notifications,omitempty"`
 	Config          DesktopConfig        `json:"config"`
 }
@@ -36,9 +37,10 @@ type DesktopMDMConfig struct {
 // DesktopMDMConfig is a subset of fleet.OrgInfo with configuration that's relevant
 // to Fleet Desktop to operate.
 type DesktopOrgInfo struct {
-	OrgName    string `json:"org_name"`
-	OrgLogoURL string `json:"org_logo_url"`
-	ContactURL string `json:"contact_url"`
+	OrgName                   string `json:"org_name"`
+	OrgLogoURL                string `json:"org_logo_url"`
+	OrgLogoURLLightBackground string `json:"org_logo_url_light_background"`
+	ContactURL                string `json:"contact_url"`
 }
 
 type MigrateMDMDeviceWebhookPayload struct {

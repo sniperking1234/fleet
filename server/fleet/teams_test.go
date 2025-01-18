@@ -1,8 +1,10 @@
 package fleet
 
 import (
+	"reflect"
 	"testing"
 
+	"github.com/fleetdm/fleet/v4/pkg/optjson"
 	"github.com/fleetdm/fleet/v4/server/ptr"
 	"github.com/stretchr/testify/require"
 )
@@ -257,4 +259,47 @@ func TestValidateUserRoles(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestTeamMDMCopy(t *testing.T) {
+	t.Run("nil receiver", func(t *testing.T) {
+		var tm *TeamMDM
+		require.Nil(t, tm.Copy())
+	})
+
+	t.Run("copy value fields", func(t *testing.T) {
+		tm := &TeamMDM{
+			EnableDiskEncryption: true,
+			MacOSUpdates: AppleOSUpdateSettings{
+				MinimumVersion: optjson.SetString("10.15.4"),
+				Deadline:       optjson.SetString("2020-01-01"),
+			},
+			MacOSSetup: MacOSSetup{
+				BootstrapPackage:            optjson.SetString("bootstrap"),
+				EnableEndUserAuthentication: true,
+				MacOSSetupAssistant:         optjson.SetString("assistant"),
+			},
+		}
+		clone := tm.Copy()
+		require.NotNil(t, clone)
+		require.NotSame(t, tm, clone)
+		require.Equal(t, tm, clone)
+	})
+
+	t.Run("copy MacOSSettings", func(t *testing.T) {
+		tm := &TeamMDM{
+			MacOSSettings: MacOSSettings{
+				CustomSettings:                 []MDMProfileSpec{{Path: "a"}, {Path: "b"}},
+				DeprecatedEnableDiskEncryption: ptr.Bool(false),
+			},
+		}
+		clone := tm.Copy()
+		require.NotSame(t, tm, clone)
+		require.Equal(t, tm, clone)
+		require.NotEqual(t,
+			reflect.ValueOf(tm.MacOSSettings.CustomSettings).Pointer(),
+			reflect.ValueOf(clone.MacOSSettings.CustomSettings).Pointer(),
+		)
+		require.NotSame(t, tm.MacOSSettings.DeprecatedEnableDiskEncryption, clone.MacOSSettings.DeprecatedEnableDiskEncryption)
+	})
 }

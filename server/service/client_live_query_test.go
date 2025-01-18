@@ -20,7 +20,7 @@ func TestLiveQueryWithContext(t *testing.T) {
 	upgrader := websocket.Upgrader{}
 	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
-		case "/api/latest/fleet/queries/run_by_names":
+		case "/api/latest/fleet/queries/run_by_identifiers":
 			resp := createDistributedQueryCampaignResponse{
 				Campaign: &fleet.DistributedQueryCampaign{
 					UpdateCreateTimestamps: fleet.UpdateCreateTimestamps{
@@ -50,7 +50,6 @@ func TestLiveQueryWithContext(t *testing.T) {
 				time.Sleep(1 * time.Second)
 				mt, message, _ := ws.ReadMessage()
 				if string(message) == `{"type":"auth","data":{"token":"1234"}}` {
-
 					return
 				}
 				if string(message) == `{"type":"select_campaign","data":{"campaign_id":99}}` {
@@ -64,10 +63,10 @@ func TestLiveQueryWithContext(t *testing.T) {
 					Type: "result",
 					Data: fleet.DistributedQueryResult{
 						DistributedQueryCampaignID: 99,
-						Host: fleet.HostResponseForHostCheap(&fleet.Host{
+						Host: fleet.ResultHostData{
 							ID:       23,
 							Hostname: "somehostaaa",
-						}),
+						},
 						Rows: []map[string]string{
 							{
 								"col1": "aaa",
@@ -94,13 +93,13 @@ func TestLiveQueryWithContext(t *testing.T) {
 			insecureSkipVerify: false,
 			urlPrefix:          "",
 		},
-		token:  "1234",
-		writer: nil,
+		token:        "1234",
+		outputWriter: nil,
 	}
 	ctx, cancelFunc := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancelFunc()
 
-	res, err := client.LiveQueryWithContext(ctx, "select 1;", nil, []string{"host1"})
+	res, err := client.LiveQueryWithContext(ctx, "select 1;", nil, nil, []string{"host1"})
 	require.NoError(t, err)
 
 	gotResults := false

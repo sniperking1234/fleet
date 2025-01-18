@@ -9,8 +9,10 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"strings"
 	"time"
+	"unicode"
 
 	"github.com/doug-martin/goqu/v9"
 	"github.com/fleetdm/fleet/v4/pkg/download"
@@ -18,8 +20,9 @@ import (
 	"github.com/fleetdm/fleet/v4/server/contexts/ctxerr"
 	"github.com/fleetdm/fleet/v4/server/fleet"
 	"github.com/fleetdm/fleet/v4/server/vulnerabilities/oval"
-	kitlog "github.com/go-kit/kit/log"
-	"github.com/go-kit/kit/log/level"
+	"github.com/go-kit/log"
+	kitlog "github.com/go-kit/log"
+	"github.com/go-kit/log/level"
 	"github.com/google/go-github/v37/github"
 	"github.com/jmoiron/sqlx"
 )
@@ -107,12 +110,15 @@ func DownloadCPEDBFromGithub(vulnPath string, cpeDBURL string) error {
 
 	githubClient := fleethttp.NewGithubClient()
 	if err := download.DownloadAndExtract(githubClient, u, path); err != nil {
-		return err
+		return fmt.Errorf("download and extract %s: %w", u.String(), err)
 	}
 
 	return nil
 }
 
+// cpeGeneralSearchQuery puts together several search statements to find the correct row in the CPE datastore.
+// Each statement has a custom weight column, where 1 is the highest priority (most likely to be correct).
+// The SQL statements are combined into a master statements with UNION.
 func cpeGeneralSearchQuery(software *fleet.Software) (string, []interface{}, error) {
 	dialect := goqu.Dialect("sqlite")
 
@@ -146,6 +152,17 @@ func cpeGeneralSearchQuery(software *fleet.Software) (string, []interface{}, err
 
 	datasets := []*goqu.SelectDataset{search1, search2, search3}
 
+	// 4 - Try vendor/product from bundle identifier, like tld.vendor.product
+	bundleParts := strings.Split(software.BundleIdentifier, ".")
+	if len(bundleParts) == 3 {
+		search4 := dialect.From(goqu.I("cpe_2").As("c")).
+			Select("c.rowid", "c.product", "c.vendor", "c.deprecated", goqu.L("4 as weight")).
+			Where(
+				goqu.L("c.vendor = ?", strings.ToLower(bundleParts[1])), goqu.L("c.product = ?", strings.ToLower(bundleParts[2])),
+			)
+		datasets = append(datasets, search4)
+	}
+
 	var sqlParts []string
 	var args []interface{}
 	var stm string
@@ -168,7 +185,12 @@ func cpeGeneralSearchQuery(software *fleet.Software) (string, []interface{}, err
 // CPEFromSoftware attempts to find a matching cpe entry for the given software in the NVD CPE dictionary. `db` contains data from the NVD CPE dictionary
 // and is optimized for lookups, see `GenerateCPEDB`. `translations` are used to aid in cpe matching. When searching for cpes, we first check if it matches
 // any translations, and then lookup in the cpe database based on the title, product and vendor.
-func CPEFromSoftware(db *sqlx.DB, software *fleet.Software, translations CPETranslations, reCache *regexpCache) (string, error) {
+func CPEFromSoftware(logger log.Logger, db *sqlx.DB, software *fleet.Software, translations CPETranslations, reCache *regexpCache) (string, error) {
+	if containsNonASCII(software.Name) {
+		level.Debug(logger).Log("msg", "skipping software with non-ascii characters", "software", software.Name, "version", software.Version, "source", software.Source)
+		return "", nil
+	}
+
 	translation, match, err := translations.Translate(reCache, software)
 	if err != nil {
 		return "", fmt.Errorf("translate software: %w", err)
@@ -176,6 +198,7 @@ func CPEFromSoftware(db *sqlx.DB, software *fleet.Software, translations CPETran
 
 	if match {
 		if translation.Skip {
+			level.Debug(logger).Log("msg", "CPE match skipped", "software", software.Name, "version", software.Version, "source", software.Source)
 			return "", nil
 		}
 
@@ -219,6 +242,9 @@ func CPEFromSoftware(db *sqlx.DB, software *fleet.Software, translations CPETran
 		}
 
 		if result.ID != 0 {
+			if translation.Part != "" {
+				result.Part = translation.Part
+			}
 			return result.FmtStr(software), nil
 		}
 	} else {
@@ -244,18 +270,18 @@ func CPEFromSoftware(db *sqlx.DB, software *fleet.Software, translations CPETran
 
 			sName := strings.ToLower(software.Name)
 			for _, sN := range strings.Split(item.Product, "_") {
-				hasAllTerms = hasAllTerms && strings.Index(sName, sN) != -1
+				hasAllTerms = hasAllTerms && strings.Contains(sName, sN)
 			}
 
 			sVendor := strings.ToLower(software.Vendor)
 			sBundle := strings.ToLower(software.BundleIdentifier)
 			for _, sV := range strings.Split(item.Vendor, "_") {
 				if sVendor != "" {
-					hasAllTerms = hasAllTerms && strings.Index(sVendor, sV) != -1
+					hasAllTerms = hasAllTerms && strings.Contains(sVendor, sV)
 				}
 
 				if sBundle != "" {
-					hasAllTerms = hasAllTerms && strings.Index(sBundle, sV) != -1
+					hasAllTerms = hasAllTerms && strings.Contains(sBundle, sV)
 				}
 			}
 
@@ -355,25 +381,120 @@ func consumeCPEBuffer(
 	return nil
 }
 
+// mysql 5.7 compatible regexp for ubuntu kernel package names
+const LinuxImageRegex = `^linux-image-[[:digit:]]+\.[[:digit:]]+\.[[:digit:]]+-[[:digit:]]+-[[:alnum:]]+`
+
+// knownUbuntuKernelVariants is a list of known kernel variants that are used in the Ubuntu kernel
+// OVAL feeds.  These are used to determine if a kernel package is a custom variant and should be
+// matched against the NVD feed rather than the OVAL feed.
+var knownUbuntuKernelVariants = []string{
+	"allwinner",
+	"aws",
+	"aws-hwe",
+	"azure",
+	"azure-fde",
+	"bluefield",
+	"dell300x",
+	"euclid",
+	"gcp",
+	"generic",
+	"generic-64k",
+	"generic-lpae",
+	"gke",
+	"gkeop",
+	"intel",
+	"intel-iotg",
+	"ibm",
+	"iot",
+	"kvm",
+	"laptop",
+	"lowlatency",
+	"lowlatency-64k",
+	"nvidia",
+	"nvidia-64k",
+	"nvidia-lowlatency",
+	"oem",
+	"oem-osp1",
+	"oracle",
+	"oracle-64k",
+	"powerpc-e500",
+	"powerpc-e500mc",
+	"powerpc-smp",
+	"powerpc64-emb",
+	"powerpc64-smp",
+	"raspi",
+	"raspi-nolpae",
+	"raspi2",
+	"snapdragon",
+	"starfive",
+	"xilinx-zynqmp",
+}
+
+func BuildLinuxExclusionRegex() string {
+	return fmt.Sprintf("-(%s)$", strings.Join(knownUbuntuKernelVariants, "|"))
+}
+
 func TranslateSoftwareToCPE(
 	ctx context.Context,
 	ds fleet.Datastore,
 	vulnPath string,
 	logger kitlog.Logger,
 ) error {
-	dbPath := filepath.Join(vulnPath, cpeDBFilename)
-
-	// Skip software from sources for which we will be using OVAL for vulnerability detection.
-	iterator, err := ds.AllSoftwareIterator(
+	// Skip software from sources for which we will be using OVAL or goval-dictionary for vulnerability detection.
+	nonOvalIterator, err := ds.AllSoftwareIterator(
 		ctx,
 		fleet.SoftwareIterQueryOptions{
-			ExcludedSources: oval.SupportedSoftwareSources,
+			// Also exclude iOS and iPadOS apps until we enable vulnerabilities support for them.
+			ExcludedSources: append(oval.SupportedSoftwareSources, "ios_apps", "ipados_apps"),
 		},
 	)
 	if err != nil {
-		return ctxerr.Wrap(ctx, err, "software iterator")
+		return ctxerr.Wrap(ctx, err, "non-oval software iterator")
 	}
-	defer iterator.Close()
+	defer nonOvalIterator.Close()
+
+	err = translateSoftwareToCPEWithIterator(ctx, ds, vulnPath, logger, nonOvalIterator)
+	if err != nil {
+		return ctxerr.Wrap(ctx, err, "translate non-oval software to CPE")
+	}
+
+	if err := nonOvalIterator.Close(); err != nil {
+		return ctxerr.Wrap(ctx, err, "closing non-oval software iterator")
+	}
+
+	ubuntuKernelIterator, err := ds.AllSoftwareIterator(
+		ctx,
+		fleet.SoftwareIterQueryOptions{
+			IncludedSources: []string{"deb_packages"},
+			NameMatch:       LinuxImageRegex,
+			NameExclude:     BuildLinuxExclusionRegex(),
+		},
+	)
+	if err != nil {
+		return ctxerr.Wrap(ctx, err, "ubuntu kernel iterator")
+	}
+	defer ubuntuKernelIterator.Close()
+
+	err = translateSoftwareToCPEWithIterator(ctx, ds, vulnPath, logger, ubuntuKernelIterator)
+	if err != nil {
+		return ctxerr.Wrap(ctx, err, "translate ubuntu kernel to CPE")
+	}
+
+	if err := ubuntuKernelIterator.Close(); err != nil {
+		return ctxerr.Wrap(ctx, err, "closing ubuntu kernel iterator")
+	}
+
+	return nil
+}
+
+func translateSoftwareToCPEWithIterator(
+	ctx context.Context,
+	ds fleet.Datastore,
+	vulnPath string,
+	logger kitlog.Logger,
+	iterator fleet.SoftwareIterator,
+) error {
+	dbPath := filepath.Join(vulnPath, cpeDBFilename)
 
 	db, err := sqliteDB(dbPath)
 	if err != nil {
@@ -397,12 +518,33 @@ func TranslateSoftwareToCPE(
 		if err != nil {
 			return ctxerr.Wrap(ctx, err, "getting value from iterator")
 		}
-		cpe, err := CPEFromSoftware(db, software, cpeTranslations, reCache)
-		if err != nil {
-			level.Error(logger).Log("software->cpe", "error translating to CPE, skipping...", "err", err)
-			continue
+		var cpe string
+		// Skip software without version to avoid false positives in the CPE
+		// matching process.
+		if software.Version == "" {
+			level.Debug(logger).Log(
+				"msg", "skipping software without version",
+				"software", software.Name,
+				"source", software.Source,
+			)
+			// We want to continue here in case the software had an invalid CPE
+			// generated by a previous version of Fleet.
+		} else {
+			cpe, err = CPEFromSoftware(logger, db, software, cpeTranslations, reCache)
+			if err != nil {
+				level.Error(logger).Log(
+					"msg", "error translating to CPE, skipping",
+					"software", software.Name,
+					"version", software.Version,
+					"source", software.Source,
+					"err", err,
+				)
+				continue
+			}
 		}
 		if cpe == software.GenerateCPE {
+			// If the generated CPE hasn't changed from what's already stored in the DB
+			// then we don't need to do anything.
 			continue
 		}
 
@@ -424,4 +566,18 @@ func TranslateSoftwareToCPE(
 	}
 
 	return nil
+}
+
+var allowedNonASCII = []int32{
+	'–', // en dash
+	'—', // em dash
+}
+
+func containsNonASCII(s string) bool {
+	for _, char := range s {
+		if char > unicode.MaxASCII && !slices.Contains(allowedNonASCII, char) {
+			return true
+		}
+	}
+	return false
 }

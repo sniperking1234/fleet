@@ -2,6 +2,8 @@ package mysql
 
 import (
 	"context"
+	"database/sql"
+	"encoding/json"
 
 	"github.com/fleetdm/fleet/v4/server/contexts/ctxerr"
 	"github.com/fleetdm/fleet/v4/server/fleet"
@@ -40,7 +42,7 @@ UNION
 	LIMIT 1)`
 
 	var res []fleet.CronStats
-	err := sqlx.SelectContext(ctx, ds.reader, &res, stmt, name, name)
+	err := sqlx.SelectContext(ctx, ds.reader(ctx), &res, stmt, name, name)
 	if err != nil {
 		return []fleet.CronStats{}, ctxerr.Wrap(ctx, err, "select cron stats")
 	}
@@ -51,7 +53,7 @@ UNION
 func (ds *Datastore) InsertCronStats(ctx context.Context, statsType fleet.CronStatsType, name string, instance string, status fleet.CronStatsStatus) (int, error) {
 	stmt := `INSERT INTO cron_stats (stats_type, name, instance, status) VALUES (?, ?, ?, ?)`
 
-	res, err := ds.writer.ExecContext(ctx, stmt, statsType, name, instance, status)
+	res, err := ds.writer(ctx).ExecContext(ctx, stmt, statsType, name, instance, status)
 	if err != nil {
 		return 0, ctxerr.Wrap(ctx, err, "insert cron stats")
 	}
@@ -63,10 +65,19 @@ func (ds *Datastore) InsertCronStats(ctx context.Context, statsType fleet.CronSt
 	return int(id), nil
 }
 
-func (ds *Datastore) UpdateCronStats(ctx context.Context, id int, status fleet.CronStatsStatus) error {
-	stmt := `UPDATE cron_stats SET status = ? WHERE id = ?`
+func (ds *Datastore) UpdateCronStats(ctx context.Context, id int, status fleet.CronStatsStatus, cronErrors *fleet.CronScheduleErrors) error {
+	stmt := `UPDATE cron_stats SET status = ?, errors = ? WHERE id = ?`
 
-	if _, err := ds.writer.ExecContext(ctx, stmt, status, id); err != nil {
+	errorsJSON := sql.NullString{}
+	if len(*cronErrors) > 0 {
+		b, err := json.Marshal(cronErrors)
+		if err == nil {
+			errorsJSON.String = string(b)
+			errorsJSON.Valid = true
+		}
+	}
+
+	if _, err := ds.writer(ctx).ExecContext(ctx, stmt, status, errorsJSON, id); err != nil {
 		return ctxerr.Wrap(ctx, err, "update cron stats")
 	}
 
@@ -76,7 +87,7 @@ func (ds *Datastore) UpdateCronStats(ctx context.Context, id int, status fleet.C
 func (ds *Datastore) UpdateAllCronStatsForInstance(ctx context.Context, instance string, fromStatus fleet.CronStatsStatus, toStatus fleet.CronStatsStatus) error {
 	stmt := `UPDATE cron_stats SET status = ? WHERE instance = ? AND status = ?`
 
-	if _, err := ds.writer.ExecContext(ctx, stmt, toStatus, instance, fromStatus); err != nil {
+	if _, err := ds.writer(ctx).ExecContext(ctx, stmt, toStatus, instance, fromStatus); err != nil {
 		return ctxerr.Wrap(ctx, err, "update all cron stats for instance")
 	}
 

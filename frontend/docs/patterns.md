@@ -11,12 +11,15 @@ should be discussed within the team and documented before merged.
 - [Typing](#typing)
 - [Utilities](#utilities)
 - [Components](#components)
-- [React Hooks](#react-hooks)
+- [Forms](#forms)
+- [React hooks](#react-hooks)
 - [React Context](#react-context)
-- [Fleet API Calls](#fleet-api-calls)
-- [Page Routing](#page-routing)
+- [Fleet API calls](#fleet-api-calls)
+- [Page routing](#page-routing)
 - [Styles](#styles)
-- [Icons and Images](#icons-and-images)
+- [Icons and images](#icons-and-images)
+- [Testing](#testing)
+- [Security considerations](#security-considerations)
 - [Other](#other)
 
 ## Typing
@@ -128,12 +131,35 @@ export default {
 
 ## Components
 
-### React Functional Components
+### React functional components
 
 We use functional components with React instead of class comonents. We do this
 as this allows us to use hooks to better share common logic between components.
 
-### Page Component Pattern
+### Passing props into components
+We tend to use explicit assignment of prop values, instead of object spread syntax:
+```
+<ExampleComponent prop1={pop1Val} prop2={prop2Val} prop3={prop3Val} />
+```
+
+### Naming handlers
+When defining component props for handlers, we prefer naming with a more general `onAction`. When
+naming the handler passed into that prop or used in the same component it's defined, we prefer
+either the same `onAction` or, if useful, a more specific `onMoreSpecifiedAction`. E.g.:
+
+```tsx
+<BigSecretComponent
+  onSubmit={onSubmit} 
+/>
+```
+or
+```tsx
+<BigSecretComponent
+  onSubmit={onUpdateBigSecret}
+/>
+```
+
+### Page component pattern
 
 When creating a **top level page** (e.g. dashboard page, hosts page, policies page)
 we wrap that page's content inside components `MainContent` and
@@ -169,11 +195,80 @@ const PackComposerPage = ({ router }: IPackComposerPageProps): JSX.Element => {
 export default PackComposerPage;
 ```
 
-## React Hooks
+
+## Forms
+
+### Data validation
+
+#### How to validate
+Forms should make use of a pure `validate` function whose input(s) correspond to form data (may include
+new and possibly former form data) and whose output is an object of formFieldName:errorMessage
+key-value pairs (`Record<string,string>`) e.g.
+
+```
+const validate = (newFormData: IFormData) => {
+  const errors = {};
+  ...
+  return errors;
+}
+```
+The output of `validate` should be used by the calling handler to set a `formErrors`
+state.
+
+#### When to validate
+Form fields should *set only new errors* on blur and on save, and *set or remove* errors on change. This provides
+an "optimistic" user experience. The user is only told they have an error once they navigate
+away from a field or hit enter, actions which imply they are finished editing the field, while they are informed they have fixed
+an error as soon as possible, that is, as soon as they make the fixing change. e.g.
+```
+const onInputChange = ({ name, value }: IFormField) => {
+  const newFormData = { ...formData, [name]: value };
+  setFormData(newFormData);
+  const newErrs = validateFormData(newFormData);
+  // only set errors that are updates of existing errors
+  // new errors are only set onBlur
+  const errsToSet: Record<string, string> = {};
+  Object.keys(formErrors).forEach((k) => {
+    if (newErrs[k]) {
+      errsToSet[k] = newErrs[k];
+    }
+  });
+  setFormErrors(errsToSet);
+};
+
+```
+
+,
+
+```
+const onInputBlur = () => {
+  setFormErrors(validateFormData(formData));
+};
+```
+
+, and 
+
+```
+const onFormSubmit = (evt: React.MouseEvent<HTMLFormElement>) => {
+  evt.preventDefault();
+
+  // return null if there are errors
+  const errs = validateFormData(formData);
+  if (Object.keys(errs).length > 0) {
+    setFormErrors(errs);
+    return;
+  }
+
+  ...
+  // continue with submit logic if no errors
+
+```
+
+## React hooks
 
 [Hooks](https://reactjs.org/docs/hooks-intro.html) are used to track state and use other features
 of React. Hooks are only allowed in functional components, which are created like so:
-
+  
 ```typescript
 import React, { useState, useEffect } from "React";
 
@@ -320,20 +415,10 @@ Below are a few need-to-knows about what's available in Fleet's CSS:
 1) When creating a form, **not** in a modal, use the class `${baseClass}__button-wrap` for the
    action buttons (cancel, save, delete, etc.) and proceed to style as needed.
 
-## Other
 
-### Local states
+## Icons and images
 
-Our first line of defense for state management is local states (i.e. `useState`). We
-use local states to keep pages/components separate from one another and easy to
-maintain. If states need to be passed to direct children, then prop-drilling should
-suffice as long as we do not go more than two levels deep. Otherwise, if states need
-to be used across multiple unrelated components or 3+ levels from a parent,
-then the [app's context](#react-context) should be used.
-
-## Icons and Images
-
-### Adding Icons
+### Adding icons
 
 To add a new icon:
 
@@ -359,3 +444,52 @@ The icon should now be available to use with the `Icon` component from the given
 
 The recommend line limit per page/component is 500 lines. This is only a recommendation.
 Larger files are to be split into multiple files if possible.
+
+
+## Testing
+
+At a bare minimum, we make every effort to test that components that should render data are doing so
+as expected. For example: `HQRTable.tests.tsx` tests that the `HQRTable` component correctly renders
+data being passed to it.
+
+At a bare minimum, critical bugs released involving the UI will have automated testing discussed at the critical bug post-mortem with a frontend engineer and an engineering manager. We make every effort to add an automated test to either the unit, integration, or E2E layer to prevent the critical bug from resurfacing.
+
+## Security considerations
+
+We make every effort to avoid using the `dangerouslySetInnerHTML` prop. When absolutely necessary to
+use this prop, we make sure to sanitize any user-defined input to it with `DOMPurify.sanitize`
+
+## Other
+
+### Local states
+
+Our first line of defense for state management is local states (i.e. `useState`). We
+use local states to keep pages/components separate from one another and easy to
+maintain. If states need to be passed to direct children, then prop-drilling should
+suffice as long as we do not go more than two levels deep. Otherwise, if states need
+to be used across multiple unrelated components or 3+ levels from a parent,
+then the [app's context](#react-context) should be used.
+
+### Reading and updating configs
+
+If you are dealing with a page that *updates* any kind of config, you'll want to access that config
+with a fresh API call to be sure you have the updated values. Otherwise, that is, you are dealing
+with a page that is only *reading* config values, get them from context.
+
+### Rendering flash messages
+
+Flash messages by default will be hidden when the user performs any navigation that changes the URL,
+in addition to the timeout set for success messages. The `renderFlash` method from notification
+context accepts an optional third `options` argument which contains an optional
+`persistOnPageChange` boolean field that can be set to `true` to negate this default behavior.
+
+If the `renderFlash` is accompanied by a router push, it's important to push to the router *before*
+calling `renderFlash`. If the push comes after the `renderFlash` call,
+the flash message may register the `push` and immediately hide itself.
+
+```tsx
+// first push
+router.push(newPath);
+// then flash
+renderFlash("error", "Something went wrong");
+```

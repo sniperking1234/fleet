@@ -1,4 +1,6 @@
-import React, { useState, useEffect, useContext } from "react";
+// TODO: Clean up/remove isPreviewMode
+
+import React, { useEffect, useContext } from "react";
 import { InjectedRouter } from "react-router";
 
 import paths from "router/paths";
@@ -26,18 +28,16 @@ const LoginPreviewPage = ({ router }: ILoginPreviewPageProps): JSX.Element => {
     setCurrentUser,
     setCurrentTeam,
   } = useContext(AppContext);
-  const [loginVisible, setLoginVisible] = useState(true);
 
   const onSubmit = async (formData: ILoginData) => {
     const { DASHBOARD } = paths;
 
     try {
-      const { user, available_teams, token } = await sessionsAPI.create(
+      const { user, available_teams, token } = await sessionsAPI.login(
         formData
       );
       local.setItem("auth_token", token);
 
-      setLoginVisible(false);
       setCurrentUser(user);
       setAvailableTeams(user, available_teams);
       setCurrentTeam(undefined);
@@ -61,7 +61,11 @@ const LoginPreviewPage = ({ router }: ILoginPreviewPageProps): JSX.Element => {
   return (
     <AuthenticationFormWrapper>
       <LoginSuccessfulPage />
-      <LoginForm handleSubmit={onSubmit} isHidden={!loginVisible} />
+      <LoginForm
+        handleSubmit={onSubmit}
+        isSubmitting={false}
+        pendingEmail={false}
+      />
     </AuthenticationFormWrapper>
   );
 };

@@ -3,7 +3,7 @@ package main
 import (
 	"errors"
 	"fmt"
-	"io/ioutil"
+	"os"
 
 	"github.com/fleetdm/fleet/v4/pkg/spec"
 	"github.com/fleetdm/fleet/v4/server/contexts/ctxerr"
@@ -34,7 +34,7 @@ func deleteCommand() *cli.Command {
 				return errors.New("-f must be specified")
 			}
 
-			b, err := ioutil.ReadFile(flFilename)
+			b, err := os.ReadFile(flFilename)
 			if err != nil {
 				return err
 			}
@@ -53,7 +53,7 @@ func deleteCommand() *cli.Command {
 				fmt.Printf("[+] deleting query %q\n", query.Name)
 				if err := fleet.DeleteQuery(query.Name); err != nil {
 					root := ctxerr.Cause(err)
-					switch root.(type) {
+					switch root.(type) { //nolint:gocritic // ignore singleCaseSwitch
 					case service.NotFoundErr:
 						fmt.Printf("[!] query %q doesn't exist\n", query.Name)
 						continue
@@ -66,7 +66,7 @@ func deleteCommand() *cli.Command {
 				fmt.Printf("[+] deleting pack %q\n", pack.Name)
 				if err := fleet.DeletePack(pack.Name); err != nil {
 					root := ctxerr.Cause(err)
-					switch root.(type) {
+					switch root.(type) { //nolint:gocritic // ignore singleCaseSwitch
 					case service.NotFoundErr:
 						fmt.Printf("[!] pack %q doesn't exist\n", pack.Name)
 						continue
@@ -79,7 +79,7 @@ func deleteCommand() *cli.Command {
 				fmt.Printf("[+] deleting label %q\n", label.Name)
 				if err := fleet.DeleteLabel(label.Name); err != nil {
 					root := ctxerr.Cause(err)
-					switch root.(type) {
+					switch root.(type) { //nolint:gocritic // ignore singleCaseSwitch
 					case service.NotFoundErr:
 						fmt.Printf("[!] label %q doesn't exist\n", label.Name)
 						continue

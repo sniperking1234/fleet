@@ -8,6 +8,12 @@ import (
 )
 
 ////////////////////////////////////////////////////////////////////////////////
+////////////////////////////////////////////////////////////////////////////////
+// All API endpoints in this file are used for 2017 packs functionality.
+////////////////////////////////////////////////////////////////////////////////
+////////////////////////////////////////////////////////////////////////////////
+
+////////////////////////////////////////////////////////////////////////////////
 // Get Scheduled Queries In Pack
 ////////////////////////////////////////////////////////////////////////////////
 
@@ -46,7 +52,6 @@ func getScheduledQueriesInPackEndpoint(ctx context.Context, request interface{},
 }
 
 func (svc *Service) GetScheduledQueriesInPack(ctx context.Context, id uint, opts fleet.ListOptions) ([]*fleet.ScheduledQuery, error) {
-	// Scheduled queries are currently authorized the same as packs.
 	if err := svc.authz.Authorize(ctx, &fleet.Pack{}, fleet.ActionRead); err != nil {
 		return nil, err
 	}
@@ -270,7 +275,7 @@ func (svc *Service) unauthorizedModifyScheduledQuery(ctx context.Context, id uin
 
 	if p.Shard != nil {
 		if p.Shard.Valid {
-			val := uint(p.Shard.Int64)
+			val := uint(p.Shard.Int64) //nolint:gosec // dismiss G115
 			sq.Shard = &val
 		} else {
 			sq.Shard = nil

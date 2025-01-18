@@ -2,8 +2,8 @@
   display: flex;
   justify-content: center;
   align-items: stretch;
-  flex-grow: 1;
   margin-top: $pad-large;
+  min-height: 950px;
 
   &__container {
     @include size(500px auto);
@@ -28,30 +28,30 @@
 
     p {
       font-size: $small;
-      margin: 0 0 8px;
+      margin: 0;
     }
 
     &--admin {
       left: 0;
-      top: unquote("max(56%, 560px)");
+      top: unquote("max(60%, 625px)");
       margin: auto;
     }
 
     &--org {
       left: calc(100% + 220px);
-      top: unquote("max(56%, 480px)");
+      top: unquote("max(60%, 480px)");
       display: none;
     }
 
     &--fleet {
       left: calc(150% + 220px);
-      top: unquote("max(56%, 480px)");
+      top: unquote("max(60%, 480px)");
       display: none;
     }
 
     &--confirmation {
       left: calc(200% + 220px);
-      top: unquote("max(56%, 480px)");
+      top: unquote("max(60%, 480px)");
       display: none;
     }
 
@@ -181,12 +181,7 @@
 
     .button {
       width: 160px;
-      margin-top: $pad-xxlarge;
-    }
-
-    .registration-fields {
-      box-sizing: border-box;
-      width: 100%;
+      margin-top: $pad-medium; // 40px total (24px gap + 16px more)
     }
   }
 }

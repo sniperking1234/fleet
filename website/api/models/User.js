@@ -174,24 +174,108 @@ without necessarily having a billing card.`
       type: 'string',
       description: 'The URL of the Fleet sandbox instance that was provisioned for this user',
       example: 'https://billybobcat.sandbox.fleetdm.com',
+      extendedDescription: 'As of Oct. 2023, new user records will not have this value set.'
     },
 
     fleetSandboxExpiresAt: {
       type: 'number',
       description: 'An JS timestamp (epoch ms) representing when this user\'s fleet sandbox instance will expire',
       example: '1502844074211',
+      extendedDescription: 'As of Oct. 2023, new user records will not have this value set.'
     },
 
     fleetSandboxDemoKey: {
       type: 'string',
       description: 'The UUID that is used as the password of this user\'s Fleet Sandbox instance that is generated when the user signs up. Only used to log the user into their Fleet Sandbox instance while it is still live.',
+      extendedDescription: 'As of Oct. 2023, new user records will not have this value set.'
     },
 
     signupReason: {
       type: 'string',
       description: 'The reason this user signed up for a fleetdm.com account',
-      isIn: ['Try Fleet Sandbox', 'Buy a license'],
-    }
+      isIn: ['Try Fleet Sandbox', 'Buy a license', 'Try Fleet'],
+    },
+
+    inSandboxWaitlist: {
+      type: 'boolean',
+      description: 'whether this user is on the Fleet Sandbox waitlist.',
+      defaultsTo: false
+    },
+
+    primaryBuyingSituation: {
+      type: 'string',
+      description: 'The primary buying situation the user selected when they signed up.',
+      extendedDescription: 'User records created before 2024-03-14 will have this attribute set to ""',
+      isIn: [
+        'eo-security',
+        'eo-it',
+        'mdm',
+        'vm',
+      ]
+    },
+
+    lastSubmittedGetStartedQuestionnaireStep: {
+      type: 'string',
+      description: 'The last step the user reached in the get started form.',
+      defaultsTo: 'start',
+    },
+
+    getStartedQuestionnaireAnswers: {
+      type: 'json',
+      description: 'This answers the user provided when they filled out the get started form.',
+      defaultsTo: {},
+    },
+
+    psychologicalStage: {
+      type: 'string',
+      description: 'This user\'s psychological stage based on the answers to the get started questionnaire.',
+      isIn: [
+        '1 - Unaware',
+        '2 - Aware',
+        '3 - Intrigued',
+        '4 - Has use case',
+        '5 - Personally confident',
+        '6 - Has team buy-in'
+      ],
+      defaultsTo: '2 - Aware'
+    },
+
+    psychologicalStageLastChangedAt: {
+      type: 'number',
+      description: 'A JS timestamp of when this user\'s psychological stage changed.',
+      extendedDescription: 'Used when deciding whether or not to send a nuture email to this user',
+    },
+
+    stageThreeNurtureEmailSentAt: {
+      type: 'number',
+      description: 'A JS timestamp of when the stage 3 nurture email was sent to the user, or 1 if the user is unsubscribed from automated emails.',
+    },
+
+    stageFourNurtureEmailSentAt: {
+      type: 'number',
+      description: 'A JS timestamp of when the stage 4 nurture email was sent to the user, or 1 if the user is unsubscribed from automated emails.',
+    },
+
+    stageFiveNurtureEmailSentAt: {
+      type: 'number',
+      description: 'A JS timestamp of when the stage 5 nurture email was sent to the user, or 1 if the user is unsubscribed from automated emails.',
+    },
+
+    fleetPremiumTrialLicenseKey: {
+      type: 'string',
+      description: 'A Fleet Premium license key that was generated for this user when they progressed through the get started questionnaire.',
+    },
+
+    fleetPremiumTrialLicenseKeyExpiresAt: {
+      type: 'number',
+      description: 'A JS timestamp of when this user\'s Fleet Premium trial license key expires.',
+    },
+
+    canUseQueryGenerator: {
+      type: 'boolean',
+      description: 'Whether or not this user can access the query generator page',
+      defaultsTo: false,
+    },
 
     //  ╔═╗╔╦╗╔╗ ╔═╗╔╦╗╔═╗
     //  ║╣ ║║║╠╩╗║╣  ║║╚═╗

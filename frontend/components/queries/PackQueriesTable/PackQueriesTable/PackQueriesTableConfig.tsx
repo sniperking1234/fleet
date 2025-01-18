@@ -4,14 +4,17 @@
 import React from "react";
 import { find } from "lodash";
 
-import { performanceIndicator, secondsToDhms } from "utilities/helpers";
+import {
+  getPerformanceImpactDescription,
+  secondsToDhms,
+} from "utilities/helpers";
 import { IScheduledQuery } from "interfaces/scheduled_query";
 import { IDropdownOption } from "interfaces/dropdownOption";
 
 import Checkbox from "components/forms/fields/Checkbox";
-import DropdownCell from "components/TableContainer/DataTable/DropdownCell";
+import ActionsDropdown from "components/ActionsDropdown";
 import HeaderCell from "components/TableContainer/DataTable/HeaderCell/HeaderCell";
-import PillCell from "components/TableContainer/DataTable/PillCell";
+import PerformanceImpactCell from "components/TableContainer/DataTable/PerformanceImpactCell";
 import TextCell from "components/TableContainer/DataTable/TextCell";
 import TooltipWrapper from "components/TooltipWrapper";
 
@@ -45,13 +48,13 @@ interface ICellProps extends IRowProps {
   };
 }
 
-interface IPillCellProps extends IRowProps {
+interface IPerformanceImpactCellProps extends IRowProps {
   cell: {
     value: { indicator: string; id: number };
   };
 }
 
-interface IDropdownCellProps extends IRowProps {
+interface IActionsDropdownProps extends IRowProps {
   cell: {
     value: IDropdownOption[];
   };
@@ -64,8 +67,8 @@ interface IDataColumn {
   accessor?: string;
   Cell:
     | ((props: ICellProps) => JSX.Element)
-    | ((props: IPillCellProps) => JSX.Element)
-    | ((props: IDropdownCellProps) => JSX.Element);
+    | ((props: IPerformanceImpactCellProps) => JSX.Element)
+    | ((props: IActionsDropdownProps) => JSX.Element);
   disableHidden?: boolean;
   disableSortBy?: boolean;
 }
@@ -89,7 +92,7 @@ const generateTableHeaders = (
           indeterminate: props.indeterminate,
           onChange: () => cellProps.toggleAllRowsSelected(),
         };
-        return <Checkbox {...checkboxProps} />;
+        return <Checkbox {...checkboxProps} enableEnterToCheck />;
       },
       Cell: (cellProps: ICellProps): JSX.Element => {
         const props = cellProps.row.getToggleRowSelectedProps();
@@ -97,7 +100,7 @@ const generateTableHeaders = (
           value: props.checked,
           onChange: () => cellProps.row.toggleRowSelected(),
         };
-        return <Checkbox {...checkboxProps} />;
+        return <Checkbox {...checkboxProps} enableEnterToCheck />;
       },
       disableHidden: true,
     },
@@ -152,7 +155,17 @@ const generateTableHeaders = (
       Header: () => {
         return (
           <div>
-            <TooltipWrapper tipContent="This is the average performance<br />impact across all hosts where<br />this query was scheduled.">
+            <TooltipWrapper
+              tipContent={
+                <>
+                  This is the average performance
+                  <br />
+                  impact across all hosts where
+                  <br />
+                  this query was scheduled.
+                </>
+              }
+            >
               Performance impact
             </TooltipWrapper>
           </div>
@@ -160,8 +173,8 @@ const generateTableHeaders = (
       },
       disableSortBy: true,
       accessor: "performance",
-      Cell: (cellProps: IPillCellProps) => (
-        <PillCell value={cellProps.cell.value} />
+      Cell: (cellProps: IPerformanceImpactCellProps) => (
+        <PerformanceImpactCell value={cellProps.cell.value} />
       ),
     },
     {
@@ -169,13 +182,13 @@ const generateTableHeaders = (
       Header: "",
       disableSortBy: true,
       accessor: "actions",
-      Cell: (cellProps: IDropdownCellProps) => (
-        <DropdownCell
+      Cell: (cellProps: IActionsDropdownProps) => (
+        <ActionsDropdown
           options={cellProps.cell.value}
           onChange={(value: string) =>
             actionSelectHandler(value, cellProps.row.original)
           }
-          placeholder={"Actions"}
+          placeholder="Actions"
         />
       ),
     },
@@ -281,7 +294,7 @@ const enhancePackQueriesData = (
       query_name: query.query_name,
       actions: generateActionDropdownOptions(),
       performance: [
-        performanceIndicator(scheduledQueryPerformance),
+        getPerformanceImpactDescription(scheduledQueryPerformance),
         query.query_id,
       ],
       stats: query.stats,

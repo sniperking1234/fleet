@@ -11,8 +11,8 @@ import (
 	"github.com/fleetdm/fleet/v4/server"
 	"github.com/fleetdm/fleet/v4/server/contexts/ctxerr"
 	"github.com/fleetdm/fleet/v4/server/fleet"
-	kitlog "github.com/go-kit/kit/log"
-	"github.com/go-kit/kit/log/level"
+	kitlog "github.com/go-kit/log"
+	"github.com/go-kit/log/level"
 )
 
 // SendFailingPoliciesBatchedPOSTs sends a failing policy to the provided
@@ -35,6 +35,12 @@ func SendFailingPoliciesBatchedPOSTs(
 	if len(hosts) == 0 {
 		level.Debug(logger).Log("msg", "no hosts", "policyID", policy.ID)
 		return nil
+	}
+	// The count may be out of date since it is only updated during the hourly cleanups_then_aggregation cron.
+	// Take care of the case where the count is less than the actual number of hosts we are returning.
+	hostsCount := uint(len(hosts))
+	if hostsCount > policy.FailingHostCount {
+		policy.FailingHostCount = hostsCount
 	}
 	sort.Slice(hosts, func(i, j int) bool {
 		return hosts[i].ID < hosts[j].ID
@@ -60,9 +66,9 @@ func SendFailingPoliciesBatchedPOSTs(
 			Policy:       policy,
 			FailingHosts: failingHosts,
 		}
-		level.Debug(logger).Log("payload", payload, "url", webhookURL.String(), "batch", len(batch))
+		level.Debug(logger).Log("payload", payload, "url", server.MaskSecretURLParams(webhookURL.String()), "batch", len(batch))
 		if err := server.PostJSONWithTimeout(ctx, webhookURL.String(), &payload); err != nil {
-			return ctxerr.Wrapf(ctx, err, "posting to %q", webhookURL)
+			return ctxerr.Wrapf(ctx, server.MaskURLError(err), "posting to %q", server.MaskSecretURLParams(webhookURL.String()))
 		}
 		if err := failingPoliciesSet.RemoveHosts(policy.ID, batch); err != nil {
 			return ctxerr.Wrapf(ctx, err, "removing hosts %+v from failing policies set %d", batch, policy.ID)

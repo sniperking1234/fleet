@@ -2,7 +2,7 @@ import React from "react";
 
 import LinkCell from "components/TableContainer/DataTable/LinkCell";
 import TextCell from "components/TableContainer/DataTable/TextCell";
-import DropdownCell from "components/TableContainer/DataTable/DropdownCell";
+import ActionsDropdown from "components/ActionsDropdown";
 import { ITeam } from "interfaces/team";
 import { IDropdownOption } from "interfaces/dropdownOption";
 import PATHS from "router/paths";
@@ -62,7 +62,7 @@ const generateTableHeaders = (
       Cell: (cellProps: ICellProps) => (
         <LinkCell
           value={cellProps.cell.value}
-          path={PATHS.TEAM_DETAILS_MEMBERS(cellProps.row.original.id)}
+          path={PATHS.TEAM_DETAILS_USERS(cellProps.row.original.id)}
         />
       ),
     },
@@ -77,8 +77,8 @@ const generateTableHeaders = (
       ),
     },
     {
-      title: "Members",
-      Header: "Members",
+      title: "Users",
+      Header: "Users",
       disableSortBy: true,
       accessor: "user_count",
       Cell: (cellProps: ICellProps) => (
@@ -91,7 +91,7 @@ const generateTableHeaders = (
       disableSortBy: true,
       accessor: "actions",
       Cell: (cellProps: IDropdownCellProps) => (
-        <DropdownCell
+        <ActionsDropdown
           options={cellProps.cell.value}
           onChange={(value: string) =>
             actionSelectHandler(value, cellProps.row.original)
@@ -107,9 +107,9 @@ const generateTableHeaders = (
 const generateActionDropdownOptions = (): IDropdownOption[] => {
   return [
     {
-      label: "Edit",
+      label: "Rename",
       disabled: false,
-      value: "edit",
+      value: "rename",
     },
     {
       label: "Delete",

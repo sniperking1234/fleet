@@ -94,16 +94,26 @@ module.exports = {
       };
     } else  {
       customRenderer.heading = function (text, level) {
-        return '<h'+level+'>'+text+'</h'+level+'>';
+        var textWithLineBreaks;
+        if(text.match(/\S(\w+\_\S)+(\w\S)+/g) && !text.match(/\s/g)){
+          textWithLineBreaks = text.replace(/(\_)/g, '&#8203;_');
+        }
+        return '<h'+level+'>'+(textWithLineBreaks ? textWithLineBreaks : text)+'</h'+level+'>';
       };
     }
 
-    // Creating a custom codeblock renderer function to render mermaid code blocks (```mermaid```) without the added <pre> tags.
-    customRenderer.code = function(code) {
-      if(code.match(/\<!-- __LANG=\%mermaid\%__ --\>/g)) {
-        return '<code>'+_.escape(code)+'\n</code>';
-      } else {
-        return '<pre><code>'+_.escape(code)+'\n</code></pre>';
+    // Creating a custom codeblock renderer function to add syntax highlighting keywords and render mermaid code blocks (```mermaid```) without the added <pre> tags.
+    customRenderer.code = function(code, infostring) {
+      if(infostring === 'mermaid') {
+        return `<code class="mermaid">${_.escape(code)}</code>`;
+      } else if(infostring === 'js') {// Interpret `js` as `javascript`
+        return `<pre><code class="hljs javascript" v-pre>${_.escape(code)}</code></pre>`;
+      } else if(infostring === 'bash' || infostring === 'sh') {// Interpret `sh` and `bash` as `bash`
+        return `<pre><code class="hljs bash" v-pre>${_.escape(code)}</code></pre>`;
+      } else if(infostring !== '') {// leaving the code language as-is if the infoString is anything else.
+        return `<pre><code class="hljs ${_.escape(infostring)}" v-pre>${_.escape(code)}</code></pre>`;
+      } else {// When unspecified, default to `text`
+        return `<pre><code class="nohighlight" v-pre>${_.escape(code)}</code></pre>`;
       }
     };
 
@@ -125,7 +135,7 @@ module.exports = {
 
     // Creating a custom table renderer to add Bootstrap's responsive table styles to markdown tables.
     customRenderer.table = function(headerHtml, bodyHtml) {
-      return `<div class="table-responsive-xl"><table class="table">\n<thead>\n${headerHtml}\n</thead>\n<tbody>${bodyHtml}\n</tbody>\n</table>\n</div>`;
+      return `<div class="table-responsive"><table class="table">\n<thead>\n${headerHtml}\n</thead>\n<tbody>${bodyHtml}\n</tbody>\n</table>\n</div>`;
     };
 
     markedOpts.renderer = customRenderer;

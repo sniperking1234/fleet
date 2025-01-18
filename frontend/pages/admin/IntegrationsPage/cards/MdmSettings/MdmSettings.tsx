@@ -1,21 +1,23 @@
-import React, { useContext, useState } from "react";
+import React, { useContext } from "react";
 import { useQuery } from "react-query";
 import { AxiosError } from "axios";
 import { InjectedRouter } from "react-router";
 
+import { DEFAULT_USE_QUERY_OPTIONS } from "utilities/constants";
 import { AppContext } from "context/app";
-
-import mdmAppleAPI from "services/entities/mdm_apple";
 import { IMdmApple } from "interfaces/mdm";
+import mdmAppleAPI, {
+  IGetVppTokensResponse,
+} from "services/entities/mdm_apple";
+import mdmAPI, { IEulaMetadataResponse } from "services/entities/mdm";
 
-import Button from "components/buttons/Button";
-import CustomLink from "components/CustomLink";
-import Spinner from "components/Spinner";
-import DataError from "components/DataError";
-import { readableDate } from "utilities/helpers";
-
-import RequestCSRModal from "./components/RequestCSRModal";
-import EndUserMigrationSection from "./components/EndUserMigrationSection/EndUserMigrationSection";
+import MdmSettingsSection from "./components/MdmSettingsSection";
+import AutomaticEnrollmentSection from "./components/AutomaticEnrollmentSection";
+import VppSection from "./components/VppSection";
+import IdpSection from "./components/IdpSection";
+import EulaSection from "./components/EulaSection";
+import EndUserMigrationSection from "./components/EndUserMigrationSection";
+import ScepSection from "./components/ScepSection/ScepSection";
 
 const baseClass = "mdm-settings";
 
@@ -26,114 +28,129 @@ interface IMdmSettingsProps {
 const MdmSettings = ({ router }: IMdmSettingsProps) => {
   const { isPremiumTier, config } = useContext(AppContext);
 
-  const [showRequestCSRModal, setShowRequestCSRModal] = useState(false);
+  const isMdmEnabled = !!config?.mdm.enabled_and_configured;
 
+  // Currently the status of this API call is what determines various UI states on
+  // this page. Because of this we will not render any of this components UI until this API
+  // call has completed.
   const {
-    data: appleAPNInfo,
-    isLoading: isLoadingMdmApple,
-    error: errorMdmApple,
+    data: APNSInfo,
+    isLoading: isLoadingAPNSInfo,
+    isError: isAPNSInfoError,
+    error: errorAPNSInfo,
   } = useQuery<IMdmApple, AxiosError, IMdmApple>(
     ["appleAPNInfo"],
     () => mdmAppleAPI.getAppleAPNInfo(),
     {
-      retry: (tries, error) => error.status !== 404 && tries <= 3,
-      enabled: config?.mdm.enabled_and_configured,
+      ...DEFAULT_USE_QUERY_OPTIONS,
+      retry: (tries, error) =>
+        error.status !== 404 && error.status !== 400 && tries <= 3,
+      // TODO: There is a potential race condition here immediately after MDM is turned off. This
+      // component gets remounted and stale config data is used to determine it this API call is
+      // enabled, resulting in a 400 response. The race really should  be fixed higher up the chain where
+      // we're fetching and setting the config, but for now we'll just assume that any 400 response
+      // means that MDM is not enabled and we'll show the "Turn on MDM" button.
       staleTime: 5000,
+      enabled: isMdmEnabled,
     }
   );
 
-  const toggleRequestCSRModal = () => {
-    setShowRequestCSRModal(!showRequestCSRModal);
-  };
-
-  // The API returns a 404 error if APNs is not configured yet, in that case we
-  // want to prompt the user to download the certs and keys to configure the
-  // server instead of the default error message.
-  const showMdmAppleError = errorMdmApple && errorMdmApple.status !== 404;
-
-  const renderMdmAppleSection = () => {
-    if (showMdmAppleError) {
-      return <DataError />;
+  // get the vpp info
+  const {
+    data: vppData,
+    isLoading: isLoadingVpp,
+    isError: isVppError,
+  } = useQuery<IGetVppTokensResponse, AxiosError>(
+    "vppInfo",
+    () => mdmAppleAPI.getVppTokens(),
+    {
+      ...DEFAULT_USE_QUERY_OPTIONS,
+      retry: false,
+      enabled: isPremiumTier && isMdmEnabled,
     }
+  );
 
-    if (!appleAPNInfo) {
-      return (
-        <>
-          <div className={`${baseClass}__section-description`}>
-            Connect Fleet to Apple Push Certificates Portal to change settings
-            and install software on your macOS hosts.
-          </div>
-          <div className={`${baseClass}__section-instructions`}>
-            <p>
-              1. Request a certificate signing request (CSR) and key for Apple
-              Push Notification Service (APNs) and a certificate and key for
-              Simple Certificate Enrollment Protocol (SCEP).
-            </p>
-            <Button onClick={toggleRequestCSRModal} variant="brand">
-              Request
-            </Button>
-            <p>2. Go to your email to download your CSR.</p>
-            <p>
-              3.{" "}
-              <CustomLink
-                url="https://identity.apple.com/pushcert/"
-                text="Sign in to Apple Push Certificates Portal"
-                newTab
-              />
-              <br />
-              If you don’t have an Apple ID, select <b>Create yours now</b>.
-            </p>
-            <p>
-              4. In Apple Push Certificates Portal, select{" "}
-              <b>Create a Certificate</b>, upload your CSR, and download your
-              APNs certificate.
-            </p>
-            <p>
-              5. Deploy Fleet with <b>mdm</b> configuration.{" "}
-              <CustomLink
-                url="https://fleetdm.com/docs/deploying/configuration#mobile-device-management-mdm"
-                text="See how"
-                newTab
-              />
-            </p>
-          </div>
-        </>
-      );
+  // get the eula metadata
+  const {
+    data: eulaMetadata,
+    isLoading: isLoadingEula,
+    isError: isEulaError,
+    error: eulaError,
+    refetch: refetchEulaMetadata,
+  } = useQuery<IEulaMetadataResponse, AxiosError>(
+    ["eula-metadata"],
+    () => mdmAPI.getEULAMetadata(),
+    {
+      ...DEFAULT_USE_QUERY_OPTIONS,
+      retry: false,
+      enabled: isPremiumTier && isMdmEnabled,
     }
+  );
 
-    return (
-      <>
-        <div className={`${baseClass}__section-description`}>
-          To change settings and install software on your macOS hosts, Apple
-          Inc. requires an Apple Push Notification service (APNs) certificate.
-        </div>
-        <div className={`${baseClass}__section-information`}>
-          <h4>Common name (CN)</h4>
-          <p>{appleAPNInfo.common_name}</p>
-          <h4>Serial number</h4>
-          <p>{appleAPNInfo.serial_number}</p>
-          <h4>Issuer</h4>
-          <p>{appleAPNInfo.issuer}</p>
-          <h4>Renew date</h4>
-          <p>{readableDate(appleAPNInfo.renew_date)}</p>
-        </div>
-      </>
-    );
-  };
+  // we use this to determine if we any of the request are still in progress
+  // and should show a spinner.
+  const isLoading = isLoadingAPNSInfo || isLoadingVpp || isLoadingEula;
+
+  const noVppTokenUploaded = !vppData || !vppData.vpp_tokens.length;
+  const hasVppError = isVppError && !noVppTokenUploaded;
+
+  const noScepCredentials = !config?.integrations.ndes_scep_proxy;
+
+  // We are relying on the API to give us a 404 to
+  // tell use the user has not uploaded a eula.
+  const noEulaUploaded = eulaError && eulaError.status === 404;
+  const hasEulaError = isEulaError && !noEulaUploaded;
+
+  // we use this to determine if there was any errors when getting any of the
+  // data we depend on to render the page. We will not include the VPP or EULA
+  // 404 errors. We only want to show an error if there was a "real" error
+  // (e.g.non 404 error).
+  const hasError = isAPNSInfoError || hasVppError || hasEulaError;
+
+  // we use this to determine if we have all the data we need to render the UI.
+  // Notice that we do not need VPP or EULA data to render this page.
+  const hasAllData = !isMdmEnabled || !!APNSInfo;
 
   return (
     <div className={baseClass}>
-      <div className={`${baseClass}__section`}>
-        <h2>Apple Push Certificates Portal</h2>
-        {isLoadingMdmApple ? <Spinner /> : renderMdmAppleSection()}
-      </div>
-      {isPremiumTier && (
-        <div className={`${baseClass}__section`}>
-          <EndUserMigrationSection router={router} />
-        </div>
-      )}
-      {showRequestCSRModal && (
-        <RequestCSRModal onCancel={toggleRequestCSRModal} />
+      {/* The MDM settings section component handles showing the pages overall
+       * loading and error states */}
+      <MdmSettingsSection
+        isLoading={isLoading}
+        isError={hasError}
+        appleAPNSInfo={APNSInfo}
+        appleAPNSError={errorAPNSInfo}
+        router={router}
+      />
+      {!isLoading && !hasError && hasAllData && (
+        <>
+          <AutomaticEnrollmentSection
+            router={router}
+            isPremiumTier={!!isPremiumTier}
+          />
+          <VppSection
+            router={router}
+            isVppOn={!noVppTokenUploaded}
+            isPremiumTier={!!isPremiumTier}
+          />
+          <ScepSection
+            router={router}
+            isScepOn={!noScepCredentials}
+            isPremiumTier={!!isPremiumTier}
+          />
+          {isPremiumTier && !!config?.mdm.apple_bm_enabled_and_configured && (
+            <>
+              <IdpSection />
+              <EulaSection
+                eulaMetadata={eulaMetadata}
+                isEulaUploaded={!noEulaUploaded}
+                onUpload={refetchEulaMetadata}
+                onDelete={refetchEulaMetadata}
+              />
+              <EndUserMigrationSection router={router} />
+            </>
+          )}
+        </>
       )}
     </div>
   );

@@ -1,6 +1,6 @@
 variable "apn_secret_name" {
   default  = "fleet-apn"
-  nullable = false
+  nullable = true
   type     = string
 }
 
@@ -10,13 +10,20 @@ variable "scep_secret_name" {
   type     = string
 }
 
-variable "dep_secret_name" {
-  default  = "fleet-dep"
+variable "abm_secret_name" {
+  default  = "fleet-abm"
   nullable = true
   type     = string
 }
 
-variable "public_domain_name" {
+variable "enable_windows_mdm" {
+  default  = false
   nullable = false
-  type     = string
+  type     = bool
+}
+
+variable "enable_apple_mdm" {
+  default  = true
+  nullable = false
+  type     = bool
 }

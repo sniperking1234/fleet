@@ -2,7 +2,7 @@
 *.exe
 
 # output directories
-build
+/build
 vendor
 node_modules
 dist
@@ -37,14 +37,11 @@ mysqldata/
 
 # test helm charts
 helm-temp
+charts/fleet/charts
 
 #editors
 .idea
-
-# Cypress e2e testing
-cypress/screenshots
-cypress/videos
-cypress/downloads
+.swp
 
 # Fleet local development DB backups
 backup.sql.gz
@@ -57,7 +54,6 @@ package-lock.json
 .terraform
 .terraform.tfstate*
 terraform.tfstate*
-*.lock.hcl
 
 # generated orbit installers and artifacts
 fleet-osquery*
@@ -92,6 +88,20 @@ macoffice_rel_notes/
 
 # residual files when running the build-windows tool
 orbit/cmd/desktop/manifest.xml
-orbit/cmd/desktop/resource.syso
+orbit/cmd/desktop/resource_windows.syso
 orbit/cmd/orbit/manifest.xml
-orbit/cmd/orbit/resource.syso
+orbit/cmd/orbit/resource_windows.syso
+
+# Residual files from osqueryd loadtests.
+osquery_worker_*.jpg
+
+# Residual files when building fleetd_tables extension.
+fleetd_tables_*
+
+# Location of test extensions executables
+tools/test_extensions/hello_world/macos
+tools/test_extensions/hello_world/windows
+tools/test_extensions/hello_world/linux
+
+# Residual files when building fleet_tables extension.
+fleet_tables_*.ext

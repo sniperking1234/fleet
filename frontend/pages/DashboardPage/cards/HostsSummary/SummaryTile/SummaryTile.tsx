@@ -1,12 +1,12 @@
 import React from "react";
-import { browserHistory } from "react-router";
-import Button from "components/buttons/Button";
+import { Link } from "react-router";
 import { kebabCase } from "lodash";
 
-import TooltipWrapper from "components/TooltipWrapper";
 import Icon from "components/Icon";
 import { IconNames } from "components/icons";
-import PremiumFeatureIconWithTooltip from "components/PremiumFeatureIconWithTooltip";
+import classnames from "classnames";
+import { Colors } from "styles/var/colors";
+import TooltipWrapper from "components/TooltipWrapper";
 
 interface ISummaryTileProps {
   count: number;
@@ -14,10 +14,10 @@ interface ISummaryTileProps {
   showUI: boolean;
   title: string;
   iconName: IconNames;
+  iconColor?: Colors;
   path: string;
   tooltip?: string;
-  isSandboxMode?: boolean;
-  sandboxPremiumOnlyIcon?: boolean;
+  notSupported?: boolean;
 }
 
 const baseClass = "summary-tile";
@@ -28,10 +28,10 @@ const SummaryTile = ({
   showUI, // false on first load only
   title,
   iconName,
+  iconColor,
   path,
   tooltip,
-  isSandboxMode = false,
-  sandboxPremiumOnlyIcon = false,
+  notSupported = false,
 }: ISummaryTileProps): JSX.Element => {
   const numberWithCommas = (x: number): string => {
     return x.toString().replace(/\B(?=(\d{3})+(?!\d))/g, ",");
@@ -42,42 +42,53 @@ const SummaryTile = ({
     opacity = isLoading ? { opacity: 0.4 } : { opacity: 1 };
   }
 
-  const handleClick = () => {
-    browserHistory.push(path);
-  };
+  const classes = classnames(`${baseClass}__tile`, `${kebabCase(title)}-tile`, {
+    [`${baseClass}__not-supported`]: notSupported,
+  });
+  const tile = (
+    <>
+      <div className={`${baseClass}__icon-count`}>
+        <Icon
+          name={iconName}
+          size="large"
+          color={iconColor}
+          className={`${baseClass}__tile-icon`}
+        />
+        {notSupported ? (
+          <div className={`${baseClass}__not-supported-text`}>
+            Not supported
+          </div>
+        ) : (
+          <div
+            className={`${baseClass}__count ${baseClass}__count--${kebabCase(
+              title
+            )}`}
+          >
+            {numberWithCommas(count)}
+          </div>
+        )}
+      </div>
+      <div className={`${baseClass}__description`}>
+        {tooltip ? (
+          <TooltipWrapper tipContent={tooltip}>{title}</TooltipWrapper>
+        ) : (
+          title
+        )}
+      </div>
+    </>
+  );
 
+  // Uses Link instead of Button to include right click functionality
+  // Cannot use Link disable option as it doesn't allow hover of tooltip
   return (
     <div className={baseClass} style={opacity} data-testid="tile">
-      <Button
-        className={`${baseClass}__tile ${kebabCase(title)}-tile`}
-        variant="unstyled"
-        onClick={() => handleClick()}
-      >
-        <>
-          <Icon name={iconName} className={`${baseClass}__tile-icon`} />
-          <div>
-            <div
-              className={`${baseClass}__count ${baseClass}__count--${kebabCase(
-                title
-              )}`}
-            >
-              {numberWithCommas(count)}
-            </div>
-            <div className={`${baseClass}__description`}>
-              {tooltip ? (
-                <TooltipWrapper tipContent={tooltip}>{title}</TooltipWrapper>
-              ) : (
-                title
-              )}
-              {isSandboxMode && sandboxPremiumOnlyIcon && (
-                <PremiumFeatureIconWithTooltip
-                  tooltipPositionOverrides={{ leftAdj: 2, topAdj: 5 }}
-                />
-              )}
-            </div>
-          </div>
-        </>
-      </Button>
+      {notSupported ? (
+        <div className={classes}>{tile}</div>
+      ) : (
+        <Link className={classes} to={path}>
+          {tile}
+        </Link>
+      )}
     </div>
   );
 };

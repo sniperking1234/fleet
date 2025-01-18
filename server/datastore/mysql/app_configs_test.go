@@ -3,10 +3,14 @@ package mysql
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"sort"
+	"strings"
 	"testing"
 	"time"
 
+	"github.com/fleetdm/fleet/v4/pkg/optjson"
+	"github.com/fleetdm/fleet/v4/server/contexts/ctxdb"
 	"github.com/fleetdm/fleet/v4/server/ptr"
 
 	"github.com/fleetdm/fleet/v4/server/fleet"
@@ -30,6 +34,10 @@ func TestAppConfig(t *testing.T) {
 		{"AggregateEnrollSecretPerTeam", testAggregateEnrollSecretPerTeam},
 		{"Defaults", testAppConfigDefaults},
 		{"Backwards Compatibility", testAppConfigBackwardsCompatibility},
+		{"GetConfigEnableDiskEncryption", testGetConfigEnableDiskEncryption},
+		{"IsEnrollSecretAvailable", testIsEnrollSecretAvailable},
+		{"NDESSCEPProxyPassword", testNDESSCEPProxyPassword},
+		{"YaraRulesRoundtrip", testYaraRulesRoundtrip},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
@@ -112,7 +120,7 @@ func testAppConfigOrgInfo(t *testing.T, ds *Datastore) {
 
 	verify, err = ds.UserByEmail(context.Background(), email)
 	assert.Nil(t, err)
-	assert.False(t, verify.SSOEnabled)
+	assert.True(t, verify.SSOEnabled) // SSO stays enabled for user even when globally disabled
 }
 
 func testAppConfigAdditionalQueries(t *testing.T, ds *Datastore) {
@@ -309,7 +317,6 @@ func testAppConfigEnrollSecretRoundtrip(t *testing.T, ds *Datastore) {
 	secrets, err = ds.GetEnrollSecrets(context.Background(), nil)
 	require.NoError(t, err)
 	require.Len(t, secrets, 2)
-
 }
 
 func testAppConfigEnrollSecretUniqueness(t *testing.T, ds *Datastore) {
@@ -318,8 +325,9 @@ func testAppConfigEnrollSecretUniqueness(t *testing.T, ds *Datastore) {
 	team1, err := ds.NewTeam(context.Background(), &fleet.Team{Name: "team1"})
 	require.NoError(t, err)
 
+	const secret = "one_secret"
 	expectedSecrets := []*fleet.EnrollSecret{
-		{Secret: "one_secret"},
+		{Secret: secret},
 	}
 	err = ds.ApplyEnrollSecrets(context.Background(), &team1.ID, expectedSecrets)
 	require.NoError(t, err)
@@ -327,11 +335,12 @@ func testAppConfigEnrollSecretUniqueness(t *testing.T, ds *Datastore) {
 	// Same secret at global level should not be allowed
 	err = ds.ApplyEnrollSecrets(context.Background(), nil, expectedSecrets)
 	require.Error(t, err)
+	assert.False(t, strings.Contains(err.Error(), secret), fmt.Sprintf("error should not contain secret in plaintext: %s", err.Error()))
 }
 
 func testAppConfigDefaults(t *testing.T, ds *Datastore) {
 	insertAppConfigQuery := `INSERT INTO app_config_json(json_value) VALUES(?) ON DUPLICATE KEY UPDATE json_value = VALUES(json_value)`
-	_, err := ds.writer.Exec(insertAppConfigQuery, `{}`)
+	_, err := ds.writer(context.Background()).Exec(insertAppConfigQuery, `{}`)
 	require.NoError(t, err)
 
 	ac, err := ds.AppConfig(context.Background())
@@ -341,7 +350,7 @@ func testAppConfigDefaults(t *testing.T, ds *Datastore) {
 	require.True(t, ac.Features.EnableHostUsers)
 	require.False(t, ac.Features.EnableSoftwareInventory)
 
-	_, err = ds.writer.Exec(
+	_, err = ds.writer(context.Background()).Exec(
 		insertAppConfigQuery,
 		`{"webhook_settings": {"interval": "12h"}, "features": {"enable_host_users": false}}`,
 	)
@@ -357,7 +366,7 @@ func testAppConfigDefaults(t *testing.T, ds *Datastore) {
 
 func testAppConfigBackwardsCompatibility(t *testing.T, ds *Datastore) {
 	insertAppConfigQuery := `INSERT INTO app_config_json(json_value) VALUES(?) ON DUPLICATE KEY UPDATE json_value = VALUES(json_value)`
-	_, err := ds.writer.Exec(insertAppConfigQuery, `
+	_, err := ds.writer(context.Background()).Exec(insertAppConfigQuery, `
 {
   "host_settings": {
     "enable_host_users": false,
@@ -430,4 +439,272 @@ func testAggregateEnrollSecretPerTeam(t *testing.T, ds *Datastore) {
 		{TeamID: ptr.Uint(2), Secret: ""},
 		{TeamID: ptr.Uint(3), Secret: "team_3_secret_1"},
 	}, agg)
+}
+
+func testGetConfigEnableDiskEncryption(t *testing.T, ds *Datastore) {
+	ctx := context.Background()
+	defer TruncateTables(t, ds)
+
+	ac, err := ds.AppConfig(ctx)
+	require.NoError(t, err)
+	require.False(t, ac.MDM.EnableDiskEncryption.Value)
+
+	enabled, err := ds.GetConfigEnableDiskEncryption(ctx, nil)
+	require.NoError(t, err)
+	require.False(t, enabled)
+
+	// Enable disk encryption for no team
+	ac.MDM.EnableDiskEncryption = optjson.SetBool(true)
+	err = ds.SaveAppConfig(ctx, ac)
+	require.NoError(t, err)
+	ac, err = ds.AppConfig(ctx)
+	require.NoError(t, err)
+	require.True(t, ac.MDM.EnableDiskEncryption.Value)
+
+	enabled, err = ds.GetConfigEnableDiskEncryption(ctx, nil)
+	require.NoError(t, err)
+	require.True(t, enabled)
+
+	// Create team
+	team1, err := ds.NewTeam(ctx, &fleet.Team{Name: "team1"})
+	require.NoError(t, err)
+
+	tm, err := ds.Team(ctx, team1.ID)
+	require.NoError(t, err)
+	require.NotNil(t, tm)
+	require.False(t, tm.Config.MDM.EnableDiskEncryption)
+
+	enabled, err = ds.GetConfigEnableDiskEncryption(ctx, &team1.ID)
+	require.NoError(t, err)
+	require.False(t, enabled)
+
+	// Enable disk encryption for the team
+	tm.Config.MDM.EnableDiskEncryption = true
+	tm, err = ds.SaveTeam(ctx, tm)
+	require.NoError(t, err)
+	require.NotNil(t, tm)
+	require.True(t, tm.Config.MDM.EnableDiskEncryption)
+}
+
+func testIsEnrollSecretAvailable(t *testing.T, ds *Datastore) {
+	ctx := context.Background()
+	defer TruncateTables(t, ds)
+
+	// Create teams
+	team1, err := ds.NewTeam(ctx, &fleet.Team{Name: "team1"})
+	require.NoError(t, err)
+	team2, err := ds.NewTeam(ctx, &fleet.Team{Name: "team2"})
+	require.NoError(t, err)
+
+	// Populate enroll secrets
+	require.NoError(t, ds.ApplyEnrollSecrets(ctx, nil, []*fleet.EnrollSecret{{Secret: "globalSecret"}}))
+	require.NoError(t, ds.ApplyEnrollSecrets(ctx, &team1.ID, []*fleet.EnrollSecret{{Secret: "teamSecret"}}))
+
+	tests := []struct {
+		secret          string
+		newResult       bool
+		globalResult    bool
+		teamResult      bool
+		otherTeamResult bool
+	}{
+		{"mySecret", true, true, true, true},
+		{"globalSecret", false, true, false, false},
+		{"teamSecret", false, false, true, false},
+	}
+
+	for _, tt := range tests {
+		t.Run(
+			tt.secret, func(t *testing.T) {
+				// Check if enroll secret is available
+				available, err := ds.IsEnrollSecretAvailable(ctx, tt.secret, true, nil)
+				require.NoError(t, err)
+				require.Equal(t, tt.newResult, available)
+				available, err = ds.IsEnrollSecretAvailable(ctx, tt.secret, true, &team2.ID)
+				require.NoError(t, err)
+				require.Equal(t, tt.newResult, available)
+				available, err = ds.IsEnrollSecretAvailable(ctx, tt.secret, false, nil)
+				require.NoError(t, err)
+				require.Equal(t, tt.globalResult, available)
+				available, err = ds.IsEnrollSecretAvailable(ctx, tt.secret, false, &team1.ID)
+				require.NoError(t, err)
+				require.Equal(t, tt.teamResult, available)
+				available, err = ds.IsEnrollSecretAvailable(ctx, tt.secret, false, &team2.ID)
+				require.NoError(t, err)
+				require.Equal(t, tt.otherTeamResult, available)
+			},
+		)
+	}
+}
+
+func testNDESSCEPProxyPassword(t *testing.T, ds *Datastore) {
+	ctx := context.Background()
+	ctx = ctxdb.BypassCachedMysql(ctx, true)
+	defer TruncateTables(t, ds)
+
+	ac, err := ds.AppConfig(ctx)
+	require.NoError(t, err)
+
+	adminURL := "https://localhost:8080/mscep_admin/"
+	username := "admin"
+	url := "https://localhost:8080/mscep/mscep.dll"
+	password := "password"
+
+	ac.Integrations.NDESSCEPProxy = optjson.Any[fleet.NDESSCEPProxyIntegration]{
+		Valid: true,
+		Set:   true,
+		Value: fleet.NDESSCEPProxyIntegration{
+			AdminURL: adminURL,
+			Username: username,
+			Password: password,
+			URL:      url,
+		},
+	}
+
+	err = ds.SaveAppConfig(ctx, ac)
+	require.NoError(t, err)
+
+	checkProxyConfig := func() {
+		result, err := ds.AppConfig(ctx)
+		require.NoError(t, err)
+		require.NotNil(t, result.Integrations.NDESSCEPProxy)
+		assert.Equal(t, url, result.Integrations.NDESSCEPProxy.Value.URL)
+		assert.Equal(t, adminURL, result.Integrations.NDESSCEPProxy.Value.AdminURL)
+		assert.Equal(t, username, result.Integrations.NDESSCEPProxy.Value.Username)
+		assert.Equal(t, fleet.MaskedPassword, result.Integrations.NDESSCEPProxy.Value.Password)
+	}
+
+	checkProxyConfig()
+
+	checkPassword := func() {
+		assets, err := ds.GetAllMDMConfigAssetsByName(ctx, []fleet.MDMAssetName{fleet.MDMAssetNDESPassword}, nil)
+		require.NoError(t, err)
+		require.Len(t, assets, 1)
+		assert.Equal(t, password, string(assets[fleet.MDMAssetNDESPassword].Value))
+	}
+	checkPassword()
+
+	// Set password to masked password -- should not update
+	ac.Integrations.NDESSCEPProxy.Value.Password = fleet.MaskedPassword
+	err = ds.SaveAppConfig(ctx, ac)
+	require.NoError(t, err)
+	checkProxyConfig()
+	checkPassword()
+
+	// Set password to empty -- password should not update
+	url = "https://newurl.com"
+	ac.Integrations.NDESSCEPProxy.Value.Password = ""
+	ac.Integrations.NDESSCEPProxy.Value.URL = url
+	err = ds.SaveAppConfig(ctx, ac)
+	require.NoError(t, err)
+	checkProxyConfig()
+	checkPassword()
+
+	// Set password to a new value
+	password = "newpassword"
+	ac.Integrations.NDESSCEPProxy.Value.Password = password
+	err = ds.SaveAppConfig(ctx, ac)
+	require.NoError(t, err)
+	checkProxyConfig()
+	checkPassword()
+}
+
+func testYaraRulesRoundtrip(t *testing.T, ds *Datastore) {
+	ctx := context.Background()
+	defer TruncateTables(t, ds)
+
+	// Empty insert
+	expectedRules := []fleet.YaraRule{}
+	err := ds.ApplyYaraRules(ctx, expectedRules)
+	require.NoError(t, err)
+	rules, err := ds.GetYaraRules(ctx)
+	require.NoError(t, err)
+	assert.Equal(t, expectedRules, rules)
+
+	// Insert values
+	expectedRules = []fleet.YaraRule{
+		{
+			Name: "wildcard.yar",
+			Contents: `rule WildcardExample
+{
+    strings:
+        $hex_string = { E2 34 ?? C8 A? FB }
+
+    condition:
+        $hex_string
+}`,
+		},
+		{
+			Name: "jump.yar",
+			Contents: `rule JumpExample
+{
+    strings:
+        $hex_string = { F4 23 [4-6] 62 B4 }
+
+    condition:
+        $hex_string
+}`,
+		},
+	}
+	err = ds.ApplyYaraRules(ctx, expectedRules)
+	require.NoError(t, err)
+	rules, err = ds.GetYaraRules(ctx)
+	require.NoError(t, err)
+	assert.Equal(t, expectedRules, rules)
+
+	rule, err := ds.YaraRuleByName(ctx, expectedRules[0].Name)
+	require.NoError(t, err)
+	assert.Equal(t, &expectedRules[0], rule)
+	rule, err = ds.YaraRuleByName(ctx, expectedRules[1].Name)
+	require.NoError(t, err)
+	assert.Equal(t, &expectedRules[1], rule)
+
+	// Update rules
+	expectedRules = []fleet.YaraRule{
+		{
+			Name: "wildcard.yar",
+			Contents: `rule WildcardExample
+{
+    strings:
+        $hex_string = { E2 34 ?? C8 A? FB }
+
+    condition:
+        $hex_string
+}`,
+		},
+		{
+			Name: "jump-modified.yar",
+			Contents: `rule JumpExample
+{
+    strings:
+        $hex_string = true
+
+    condition:
+        $hex_string
+}`,
+		},
+	}
+	err = ds.ApplyYaraRules(ctx, expectedRules)
+	require.NoError(t, err)
+	rules, err = ds.GetYaraRules(ctx)
+	require.NoError(t, err)
+	assert.Equal(t, expectedRules, rules)
+
+	rule, err = ds.YaraRuleByName(ctx, expectedRules[0].Name)
+	require.NoError(t, err)
+	assert.Equal(t, &expectedRules[0], rule)
+	rule, err = ds.YaraRuleByName(ctx, expectedRules[1].Name)
+	require.NoError(t, err)
+	assert.Equal(t, &expectedRules[1], rule)
+
+	// Clear rules
+	expectedRules = []fleet.YaraRule{}
+	err = ds.ApplyYaraRules(ctx, expectedRules)
+	require.NoError(t, err)
+	rules, err = ds.GetYaraRules(ctx)
+	require.NoError(t, err)
+	assert.Equal(t, expectedRules, rules)
+
+	// Get rule that doesn't exist
+	_, err = ds.YaraRuleByName(ctx, "wildcard.yar")
+	require.Error(t, err)
 }

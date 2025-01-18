@@ -62,6 +62,9 @@ pkill fleet-desktop || true
 # Remove any pre-existing version of the config
 launchctl bootout "system/${DAEMON_LABEL}"
 
+# Make sure the launch daemon is enabled before we try to bootstrap it
+launchctl enable "system/${DAEMON_LABEL}"
+
 # Add the daemon to the launchd system.
 #
 # We add retries because we've seen "launchctl bootstrap" fail
@@ -81,15 +84,11 @@ while ! launchctl bootstrap system "${DAEMON_PLIST}"; do
 done
 echo "Successfully bootstrap system ${DAEMON_PLIST}"
 
-# Enable the daemon
-launchctl enable "system/${DAEMON_LABEL}"
 # Force the daemon to start
 launchctl kickstart "system/${DAEMON_LABEL}"
 {{- end }}
 `))
 
-// TODO set Nice?
-//
 // Note it's important not to start the orbit binary in
 // `/usr/local/bin/orbit` because this is a path that users usually have write
 // access to, and running that binary with launchd can become a privilege
@@ -125,6 +124,10 @@ var macosLaunchdTemplate = template.Must(template.New("").Option("missingkey=err
 		<key>ORBIT_USE_SYSTEM_CONFIGURATION</key>
 		<string>{{ .UseSystemConfiguration }}</string>
 		{{- end }}
+		{{- if .EnableScripts }}
+		<key>ORBIT_ENABLE_SCRIPTS</key>
+		<string>{{ .EnableScripts }}</string>
+		{{- end }}
 		{{- if .DisableUpdates }}
 		<key>ORBIT_DISABLE_UPDATES</key>
 		<string>true</string>
@@ -151,6 +154,18 @@ var macosLaunchdTemplate = template.Must(template.New("").Option("missingkey=err
 		{{- end }}
 		<key>ORBIT_UPDATE_INTERVAL</key>
 		<string>{{ .OrbitUpdateInterval }}</string>
+		{{- if and (ne .HostIdentifier "") (ne .HostIdentifier "uuid") }}
+		<key>ORBIT_HOST_IDENTIFIER</key>
+		<string>{{ .HostIdentifier }}</string>
+		{{- end }}
+		{{- if .DisableKeystore }}
+		<key>ORBIT_DISABLE_KEYSTORE</key>
+		<string>true</string>
+		{{- end }}
+		{{- if .OsqueryDB }}
+		<key>ORBIT_OSQUERY_DB</key>
+		<string>{{ .OsqueryDB }}</string>
+		{{- end }}
 	</dict>
 	<key>KeepAlive</key>
 	<true/>

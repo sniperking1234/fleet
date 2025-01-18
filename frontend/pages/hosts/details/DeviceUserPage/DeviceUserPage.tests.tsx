@@ -8,21 +8,49 @@ import { createCustomRenderer } from "test/test-utils";
 import { customDeviceHandler } from "test/handlers/device-handler";
 import DeviceUserPage from "./DeviceUserPage";
 
+const mockRouter = {
+  push: jest.fn(),
+  replace: jest.fn(),
+  goBack: jest.fn(),
+  goForward: jest.fn(),
+  go: jest.fn(),
+  setRouteLeaveHook: jest.fn(),
+  isActive: jest.fn(),
+  createHref: jest.fn(),
+  createPath: jest.fn(),
+};
+
+const mockLocation = {
+  pathname: "",
+  query: {
+    vulnerable: undefined,
+    page: undefined,
+    query: undefined,
+    order_key: undefined,
+    order_direction: undefined,
+  },
+  search: undefined,
+};
+
 describe("Device User Page", () => {
-  it("renders the software empty message if the device has no software", async () => {
+  it("hides the software tab if the device has no software", async () => {
     const render = createCustomRenderer({
       withBackendMock: true,
     });
 
     // TODO: fix return type from render
     const { user } = render(
-      <DeviceUserPage params={{ device_auth_token: "testToken" }} />
+      <DeviceUserPage
+        router={mockRouter}
+        params={{ device_auth_token: "testToken" }}
+        location={mockLocation}
+      />
     );
 
     // waiting for the device data to render
     await screen.findByText("About");
 
-    await user.click(screen.getByRole("tab", { name: "Software" }));
+    expect(screen.queryByText(/Software/)).not.toBeInTheDocument();
 
     // TODO: Fix this to the new copy
     // expect(screen.getByText("No software detected")).toBeInTheDocument();
@@ -37,7 +65,11 @@ describe("Device User Page", () => {
       });
 
       const { user } = await render(
-        <DeviceUserPage params={{ device_auth_token: "testToken" }} />
+        <DeviceUserPage
+          router={mockRouter}
+          params={{ device_auth_token: "testToken" }}
+          location={mockLocation}
+        />
       );
 
       // waiting for the device data to render
@@ -56,6 +88,7 @@ describe("Device User Page", () => {
         host,
         global_config: {
           mdm: { enabled_and_configured: true },
+          features: { enable_software_inventory: true },
         },
       });
 
@@ -72,6 +105,7 @@ describe("Device User Page", () => {
         host,
         global_config: {
           mdm: { enabled_and_configured: true },
+          features: { enable_software_inventory: true },
         },
       });
 
@@ -88,6 +122,7 @@ describe("Device User Page", () => {
         host,
         global_config: {
           mdm: { enabled_and_configured: false },
+          features: { enable_software_inventory: true },
         },
       });
 
@@ -105,6 +140,7 @@ describe("Device User Page", () => {
         host,
         global_config: {
           mdm: { enabled_and_configured: true },
+          features: { enable_software_inventory: true },
         },
       });
 

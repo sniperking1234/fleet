@@ -4,12 +4,14 @@ import (
 	"bufio"
 	"compress/gzip"
 	"context"
+	"crypto/x509"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
 	"net"
 	"net/http"
+	"net/url"
 	"reflect"
 	"strconv"
 	"strings"
@@ -18,8 +20,8 @@ import (
 	"github.com/fleetdm/fleet/v4/server/contexts/license"
 	"github.com/fleetdm/fleet/v4/server/fleet"
 	"github.com/go-kit/kit/endpoint"
-	"github.com/go-kit/kit/log"
 	kithttp "github.com/go-kit/kit/transport/http"
+	"github.com/go-kit/log"
 	"github.com/gorilla/mux"
 )
 
@@ -83,17 +85,16 @@ type requestDecoder interface {
 }
 
 // A value that implements bodyDecoder takes control of decoding the request
-// body. Other fields such as url and query parameters are decoded prior to
-// calling DecodeBody with the request's body as an io.Reader.
+// body.
 type bodyDecoder interface {
-	DecodeBody(ctx context.Context, r io.Reader) error
+	DecodeBody(ctx context.Context, r io.Reader, u url.Values, c []*x509.Certificate) error
 }
 
 // makeDecoder creates a decoder for the type for the struct passed on. If the
 // struct has at least 1 json tag it'll unmarshall the body. If the struct has
 // a `url` tag with value list_options it'll gather fleet.ListOptions from the
 // URL (similarly for host_options, carve_options, user_options that derive
-// from the common list_options).
+// from the common list_options). Note that these behaviors do not work for embedded structs.
 //
 // Finally, any other `url` tag will be treated as a path variable (of the form
 // /path/{name} in the route's path) from the URL path pattern, and it'll be
@@ -171,7 +172,6 @@ func makeDecoder(iface interface{}) kithttp.DecodeRequestFunc {
 				if err != nil {
 					return nil, err
 				}
-
 				switch urlTagValue {
 				case "list_options":
 					opts, err := listOptionsFromRequest(r)
@@ -272,13 +272,19 @@ func makeDecoder(iface interface{}) kithttp.DecodeRequestFunc {
 					if err != nil {
 						return nil, badRequestErr("parsing uint from query", err)
 					}
-					field.SetUint(uint64(queryValUint))
+					field.SetUint(uint64(queryValUint)) //nolint:gosec // dismiss G115
+				case reflect.Float64:
+					queryValFloat, err := strconv.ParseFloat(queryVal, 64)
+					if err != nil {
+						return nil, badRequestErr("parsing float from query", err)
+					}
+					field.SetFloat(queryValFloat)
 				case reflect.Bool:
 					field.SetBool(queryVal == "1" || queryVal == "true")
 				case reflect.Int:
 					queryValInt := 0
 					switch queryTagValue {
-					case "order_direction":
+					case "order_direction", "inherited_order_direction":
 						switch queryVal {
 						case "desc":
 							queryValInt = int(fleet.OrderDescending)
@@ -304,7 +310,12 @@ func makeDecoder(iface interface{}) kithttp.DecodeRequestFunc {
 
 		if isBodyDecoder {
 			bd := v.Interface().(bodyDecoder)
-			if err := bd.DecodeBody(ctx, body); err != nil {
+			var certs []*x509.Certificate
+			if (r.TLS != nil) && (r.TLS.PeerCertificates != nil) {
+				certs = r.TLS.PeerCertificates
+			}
+
+			if err := bd.DecodeBody(ctx, body, r.URL.Query(), certs); err != nil {
 				return nil, err
 			}
 		}
@@ -366,7 +377,7 @@ func newDeviceAuthenticatedEndpointer(svc fleet.Service, logger log.Logger, opts
 	}
 
 	// Inject the fleet.CapabilitiesHeader header to the response for device endpoints
-	opts = append(opts, capabilitiesResponseFunc(fleet.ServerDeviceCapabilities))
+	opts = append(opts, capabilitiesResponseFunc(fleet.GetServerDeviceCapabilities()))
 	// Add the capabilities reported by the device to the request context
 	opts = append(opts, capabilitiesContextFunc())
 
@@ -408,7 +419,7 @@ func newOrbitAuthenticatedEndpointer(svc fleet.Service, logger log.Logger, opts 
 	}
 
 	// Inject the fleet.Capabilities header to the response for Orbit hosts
-	opts = append(opts, capabilitiesResponseFunc(fleet.ServerOrbitCapabilities))
+	opts = append(opts, capabilitiesResponseFunc(fleet.GetServerOrbitCapabilities()))
 	// Add the capabilities reported by Orbit to the request context
 	opts = append(opts, capabilitiesContextFunc())
 
@@ -437,9 +448,12 @@ var pathReplacer = strings.NewReplacer(
 	"}", "_",
 )
 
-func getNameFromPathAndVerb(verb, path string) string {
-	return strings.ToLower(verb) + "_" +
-		pathReplacer.Replace(strings.TrimPrefix(strings.TrimRight(path, "/"), "/api/_version_/fleet/"))
+func getNameFromPathAndVerb(verb, path, startAt string) string {
+	prefix := strings.ToLower(verb) + "_"
+	if startAt != "" {
+		prefix += pathReplacer.Replace(startAt) + "_"
+	}
+	return prefix + pathReplacer.Replace(strings.TrimPrefix(strings.TrimRight(path, "/"), "/api/_version_/fleet/"))
 }
 
 func capabilitiesResponseFunc(capabilities fleet.CapabilityMap) kithttp.ServerOption {
@@ -450,9 +464,7 @@ func capabilitiesResponseFunc(capabilities fleet.CapabilityMap) kithttp.ServerOp
 }
 
 func capabilitiesContextFunc() kithttp.ServerOption {
-	return kithttp.ServerBefore(func(ctx context.Context, r *http.Request) context.Context {
-		return capabilities.NewContext(ctx, r)
-	})
+	return kithttp.ServerBefore(capabilities.NewContext)
 }
 
 func writeCapabilitiesHeader(w http.ResponseWriter, capabilities fleet.CapabilityMap) {
@@ -487,6 +499,10 @@ func (e *authEndpointer) POST(path string, f handlerFunc, v interface{}) {
 
 func (e *authEndpointer) GET(path string, f handlerFunc, v interface{}) {
 	e.handleEndpoint(path, f, v, "GET")
+}
+
+func (e *authEndpointer) PUT(path string, f handlerFunc, v interface{}) {
+	e.handleEndpoint(path, f, v, "PUT")
 }
 
 func (e *authEndpointer) PATCH(path string, f handlerFunc, v interface{}) {
@@ -545,14 +561,14 @@ func (e *authEndpointer) handlePathHandler(path string, pathHandler func(path st
 	}
 
 	versionedPath := strings.Replace(path, "/_version_/", fmt.Sprintf("/{fleetversion:(?:%s)}/", strings.Join(versions, "|")), 1)
-	nameAndVerb := getNameFromPathAndVerb(verb, path)
+	nameAndVerb := getNameFromPathAndVerb(verb, path, e.startingAtVersion)
 	if e.usePathPrefix {
 		e.r.PathPrefix(versionedPath).Handler(pathHandler(versionedPath)).Name(nameAndVerb).Methods(verb)
 	} else {
 		e.r.Handle(versionedPath, pathHandler(versionedPath)).Name(nameAndVerb).Methods(verb)
 	}
 	for _, alias := range e.alternativePaths {
-		nameAndVerb := getNameFromPathAndVerb(verb, alias)
+		nameAndVerb := getNameFromPathAndVerb(verb, alias, e.startingAtVersion)
 		versionedPath := strings.Replace(alias, "/_version_/", fmt.Sprintf("/{fleetversion:(?:%s)}/", strings.Join(versions, "|")), 1)
 		if e.usePathPrefix {
 			e.r.PathPrefix(versionedPath).Handler(pathHandler(versionedPath)).Name(nameAndVerb).Methods(verb)
@@ -584,6 +600,7 @@ func (e *authEndpointer) makeEndpoint(f handlerFunc, v interface{}) http.Handler
 		mw := e.customMiddleware[i]
 		endp = mw(endp)
 	}
+
 	return newServer(endp, makeDecoder(v), e.opts)
 }
 

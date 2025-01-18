@@ -32,6 +32,11 @@ func BoolPtr(x bool) **bool {
 	return &p
 }
 
+func StringPtr(x string) **string {
+	p := String(x)
+	return &p
+}
+
 // Time returns a pointer to the provided time.Time.
 func Time(x time.Time) *time.Time {
 	return &x
@@ -60,5 +65,9 @@ func Float64Ptr(x float64) **float64 {
 }
 
 func Int64(x int64) *int64 {
+	return &x
+}
+
+func Duration(x time.Duration) *time.Duration {
 	return &x
 }

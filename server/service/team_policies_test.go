@@ -3,6 +3,7 @@ package service
 import (
 	"context"
 	"testing"
+	"time"
 
 	"github.com/fleetdm/fleet/v4/server/authz"
 	"github.com/fleetdm/fleet/v4/server/contexts/viewer"
@@ -24,14 +25,14 @@ func TestTeamPoliciesAuth(t *testing.T) {
 			},
 		}, nil
 	}
-	ds.ListTeamPoliciesFunc = func(ctx context.Context, teamID uint) (tpol, ipol []*fleet.Policy, err error) {
+	ds.ListTeamPoliciesFunc = func(ctx context.Context, teamID uint, opts fleet.ListOptions, iopts fleet.ListOptions) (tpol, ipol []*fleet.Policy, err error) {
 		return nil, nil, nil
 	}
 	ds.PoliciesByIDFunc = func(ctx context.Context, ids []uint) (map[uint]*fleet.Policy, error) {
 		return nil, nil
 	}
 	ds.TeamPolicyFunc = func(ctx context.Context, teamID uint, policyID uint) (*fleet.Policy, error) {
-		return nil, nil
+		return &fleet.Policy{}, nil
 	}
 	ds.PolicyFunc = func(ctx context.Context, id uint) (*fleet.Policy, error) {
 		if id == 1 {
@@ -44,7 +45,7 @@ func TestTeamPoliciesAuth(t *testing.T) {
 		}
 		return nil, nil
 	}
-	ds.SavePolicyFunc = func(ctx context.Context, p *fleet.Policy) error {
+	ds.SavePolicyFunc = func(ctx context.Context, p *fleet.Policy, shouldDeleteAll bool, removePolicyStats bool) error {
 		return nil
 	}
 	ds.DeleteTeamPoliciesFunc = func(ctx context.Context, teamID uint, ids []uint) ([]uint, error) {
@@ -56,11 +57,19 @@ func TestTeamPoliciesAuth(t *testing.T) {
 	ds.ApplyPolicySpecsFunc = func(ctx context.Context, authorID uint, specs []*fleet.PolicySpec) error {
 		return nil
 	}
-	ds.NewActivityFunc = func(ctx context.Context, user *fleet.User, activity fleet.ActivityDetails) error {
+	ds.AppConfigFunc = func(ctx context.Context) (*fleet.AppConfig, error) {
+		return &fleet.AppConfig{}, nil
+	}
+	ds.NewActivityFunc = func(
+		ctx context.Context, user *fleet.User, activity fleet.ActivityDetails, details []byte, createdAt time.Time,
+	) error {
 		return nil
 	}
 	ds.TeamFunc = func(ctx context.Context, tid uint) (*fleet.Team, error) {
 		return &fleet.Team{ID: 1}, nil
+	}
+	ds.GetSoftwareInstallerMetadataByIDFunc = func(ctx context.Context, id uint) (*fleet.SoftwareInstaller, error) {
+		return &fleet.SoftwareInstaller{}, nil
 	}
 
 	testCases := []struct {
@@ -143,13 +152,13 @@ func TestTeamPoliciesAuth(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			ctx := viewer.NewContext(ctx, viewer.Viewer{User: tt.user})
 
-			_, err := svc.NewTeamPolicy(ctx, 1, fleet.PolicyPayload{
+			_, err := svc.NewTeamPolicy(ctx, 1, fleet.NewTeamPolicyPayload{
 				Name:  "query1",
 				Query: "select 1;",
 			})
 			checkAuthErr(t, tt.shouldFailWrite, err)
 
-			_, _, err = svc.ListTeamPolicies(ctx, 1)
+			_, _, err = svc.ListTeamPolicies(ctx, 1, fleet.ListOptions{}, fleet.ListOptions{}, false)
 			checkAuthErr(t, tt.shouldFailRead, err)
 
 			_, err = svc.GetTeamPolicyByIDQueries(ctx, 1, 1)
@@ -173,10 +182,37 @@ func TestTeamPoliciesAuth(t *testing.T) {
 	}
 }
 
+func TestTeamPolicyVPPAutomationRejectsNonMacOS(t *testing.T) {
+	ds := new(mock.Store)
+	svc, ctx := newTestService(t, ds, nil, nil)
+	ctx = viewer.NewContext(ctx, viewer.Viewer{User: &fleet.User{GlobalRole: ptr.String(fleet.RoleAdmin)}})
+
+	appID := fleet.VPPAppID{AdamID: "123456", Platform: fleet.IOSPlatform}
+	ds.TeamExistsFunc = func(ctx context.Context, id uint) (bool, error) {
+		return true, nil
+	}
+	ds.SoftwareTitleByIDFunc = func(ctx context.Context, id uint, teamID *uint, tmFilter fleet.TeamFilter) (*fleet.SoftwareTitle, error) {
+		return &fleet.SoftwareTitle{
+			AppStoreApp: &fleet.VPPAppStoreApp{
+				VPPAppID: appID,
+			},
+		}, nil
+	}
+
+	_, err := svc.NewTeamPolicy(ctx, 1, fleet.NewTeamPolicyPayload{
+		Name:            "query1",
+		Query:           "select 1;",
+		SoftwareTitleID: ptr.Uint(123),
+	})
+	require.ErrorContains(t, err, "is associated to an iOS or iPadOS VPP app")
+}
+
 func checkAuthErr(t *testing.T, shouldFail bool, err error) {
+	t.Helper()
 	if shouldFail {
 		require.Error(t, err)
-		require.Equal(t, (&authz.Forbidden{}).Error(), err.Error())
+		var forbiddenError *authz.Forbidden
+		require.ErrorAs(t, err, &forbiddenError)
 	} else {
 		require.NoError(t, err)
 	}

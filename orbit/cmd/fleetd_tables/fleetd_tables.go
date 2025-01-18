@@ -16,6 +16,8 @@ var (
 	socket   = flag.String("socket", "", "Path to the extensions UNIX domain socket")
 	timeout  = flag.Int("timeout", 3, "Seconds to wait for autoloaded extensions")
 	interval = flag.Int("interval", 3, "Seconds delay between connectivity checks")
+	// verbose must be set because osqueryd will set it on the extension when running in verbose mode.
+	_ = flag.Bool("verbose", false, "Enable verbose informational messages")
 )
 
 func main() {
@@ -49,7 +51,14 @@ func main() {
 	}
 
 	plugins := orbittable.OrbitDefaultTables()
-	plugins = append(plugins, orbittable.PlatformTables()...)
+	opts := orbittable.PluginOpts{
+		Socket: *socket,
+	}
+	platformTables, err := orbittable.PlatformTables(opts)
+	if err != nil {
+		log.Fatalln(err)
+	}
+	plugins = append(plugins, platformTables...)
 	server.RegisterPlugin(plugins...)
 	if err := server.Run(); err != nil {
 		log.Fatalln(err)
