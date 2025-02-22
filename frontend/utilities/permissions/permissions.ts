@@ -13,8 +13,16 @@ export const isPremiumTier = (config: IConfig): boolean => {
   return config.license.tier === "premium";
 };
 
-export const isMdmEnabledAndConfigured = (config: IConfig): boolean => {
+export const isMacMdmEnabledAndConfigured = (config: IConfig): boolean => {
   return Boolean(config.mdm.enabled_and_configured);
+};
+
+export const isWindowsMdmEnabledAndConfigured = (config: IConfig): boolean => {
+  return Boolean(config.mdm.windows_enabled_and_configured);
+};
+
+export const isAndroidMdmEnabledAndConfigured = (config: IConfig): boolean => {
+  return Boolean(config.mdm.android_enabled_and_configured);
 };
 
 export const isGlobalAdmin = (user: IUser): boolean => {
@@ -36,12 +44,15 @@ export const isOnGlobalTeam = (user: IUser): boolean => {
 };
 
 // This checks against a specific team
-const isTeamObserver = (user: IUser | null, teamId: number): boolean => {
+export const isTeamObserver = (
+  user: IUser | null,
+  teamId: number | null
+): boolean => {
   const userTeamRole = user?.teams.find((team) => team.id === teamId)?.role;
   return userTeamRole === "observer" || userTeamRole === "observer_plus";
 };
 
-const isTeamMaintainer = (
+export const isTeamMaintainer = (
   user: IUser | null,
   teamId: number | null
 ): boolean => {
@@ -49,7 +60,10 @@ const isTeamMaintainer = (
   return userTeamRole === "maintainer";
 };
 
-const isTeamAdmin = (user: IUser | null, teamId: number | null): boolean => {
+export const isTeamAdmin = (
+  user: IUser | null,
+  teamId: number | null
+): boolean => {
   const userTeamRole = user?.teams.find((team) => team.id === teamId)?.role;
   return userTeamRole === "admin";
 };
@@ -112,13 +126,20 @@ const isOnlyObserver = (user: IUser): boolean => {
   return false;
 };
 
-const isObserverPlus = (user: IUser, teamId: number | null): boolean => {
-  if (user.global_role === "observer_plus") {
-    return true;
-  }
+export const isGlobalObserverPlus = (user: IUser): boolean => {
+  return user.global_role === "observer_plus";
+};
 
+export const isTeamObserverPlus = (
+  user: IUser | null,
+  teamId: number | null
+): boolean => {
   const userTeamRole = user?.teams.find((team) => team.id === teamId)?.role;
   return userTeamRole === "observer_plus";
+};
+
+export const isObserverPlus = (user: IUser, teamId: number | null): boolean => {
+  return isGlobalObserverPlus(user) || isTeamObserverPlus(user, teamId);
 };
 
 const isNoAccess = (user: IUser): boolean => {
@@ -129,12 +150,15 @@ export default {
   isSandboxMode,
   isFreeTier,
   isPremiumTier,
-  isMdmEnabledAndConfigured,
+  isMacMdmEnabledAndConfigured,
+  isWindowsMdmEnabledAndConfigured,
+  isAndroidMdmEnabledAndConfigured,
   isGlobalAdmin,
   isGlobalMaintainer,
   isGlobalObserver,
   isOnGlobalTeam,
   isTeamObserver,
+  isTeamObserverPlus,
   isTeamMaintainer,
   isTeamMaintainerOrTeamAdmin,
   isAnyTeamObserverPlus,

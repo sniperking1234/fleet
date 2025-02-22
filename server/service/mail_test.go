@@ -52,15 +52,15 @@ func TestMailService(t *testing.T) {
 
 	ds.AppConfigFunc = func(ctx context.Context) (*fleet.AppConfig, error) {
 		return &fleet.AppConfig{
-			SMTPSettings: fleet.SMTPSettings{
+			SMTPSettings: &fleet.SMTPSettings{
 				SMTPEnabled:              true,
 				SMTPConfigured:           true,
 				SMTPAuthenticationType:   fleet.AuthTypeNameUserNamePassword,
 				SMTPAuthenticationMethod: fleet.AuthMethodNamePlain,
 				SMTPUserName:             "mailpit-username",
 				SMTPPassword:             "mailpit-password",
-				SMTPEnableTLS:            true,
-				SMTPVerifySSLCerts:       true,
+				SMTPEnableTLS:            false,
+				SMTPVerifySSLCerts:       false,
 				SMTPPort:                 1026,
 				SMTPServer:               "localhost",
 				SMTPSenderAddress:        "foobar@example.com",
@@ -86,6 +86,18 @@ func TestMailService(t *testing.T) {
 		return invite, nil
 	}
 
+	ds.SaveABMTokenFunc = func(ctx context.Context, tok *fleet.ABMToken) error {
+		return nil
+	}
+
+	ds.ListVPPTokensFunc = func(ctx context.Context) ([]*fleet.VPPTokenDB, error) {
+		return []*fleet.VPPTokenDB{}, nil
+	}
+
+	ds.ListABMTokensFunc = func(ctx context.Context) ([]*fleet.ABMToken, error) {
+		return []*fleet.ABMToken{}, nil
+	}
+
 	ctx = test.UserContext(ctx, test.UserAdmin)
 
 	// (1) Modifying the app config `sender_address` field to trigger a test e-mail send.
@@ -103,8 +115,8 @@ func TestMailService(t *testing.T) {
     "authentication_method": "authmethod_plain",
     "user_name": "mailpit-username",
     "password": "mailpit-password",
-    "enable_ssl_tls": true,
-    "verify_ssl_certs": true,
+    "enable_ssl_tls": false,
+    "verify_ssl_certs": false,
     "port": 1026,
     "server": "127.0.0.1",
     "sender_address": "foobar_updated@example.com"
@@ -142,7 +154,7 @@ func TestMailService(t *testing.T) {
 	require.NoError(t, err)
 
 	lastMessage = getLastMailPitMessage()
-	require.Equal(t, "You are Invited to Fleet", lastMessage["Subject"])
+	require.Equal(t, "You have been invited to Fleet!", lastMessage["Subject"])
 
 	ds.UserByIDFunc = func(ctx context.Context, id uint) (*fleet.User, error) {
 		if id == 1 {

@@ -2,9 +2,9 @@
 
 #### [News](https://fleetdm.com/announcements) &nbsp; · &nbsp; [Report a bug](https://github.com/fleetdm/fleet/issues/new) &nbsp; · &nbsp; [Handbook](https://fleetdm.com/handbook/company) &nbsp; · &nbsp; [Why open source?](https://fleetdm.com/handbook/company/why-this-way#why-open-source) &nbsp; · &nbsp; [Art](https://fleetdm.com/logos)
 
-Open-source posture management for computes and computers, designed for APIs, GitOps, webhooks, YAML, and humans.  Built on osquery, nanoMDM, and Nudge.
+Open-source platform for IT and security teams with thousands of computers.  Designed for APIs, GitOps, webhooks, YAML, and humans.
 
-<a href="https://fleetdm.com/logos"><img alt="Wallpaper featuring a futuristic cloud city with the Fleet logo" src="https://github.com/fleetdm/fleet/assets/618009/f705c7ee-6efe-448e-b5ee-f5535d7cd101"/></a>
+<a href="https://fleetdm.com/logos"><img src="https://github.com/fleetdm/fleet/assets/618009/f835ec29-1cb9-49ba-a0f3-395ffd9d5c9f" alt="A glass city in the clouds"/></a>
 
 
 ## What's it for?
@@ -14,7 +14,7 @@ Organizations like Fastly and Gusto use Fleet for vulnerability reporting, detec
 To see what kind of data you can use Fleet to gather, check out the [table reference documentation](https://fleetdm.com/tables).
 
 #### Out-of-the-box policies
-Fleet includes out-of-the box support for all [CIS benchmarks for macOS and Windows](https://fleetdm.com/pricing), as well as many [simpler queries](https://fleetdm.com/queries).
+Fleet includes out-of-the box support for all [CIS benchmarks for macOS and Windows](https://fleetdm.com/docs/using-fleet/cis-benchmarks), as well as many [simpler queries](https://fleetdm.com/queries).
 
 Take as much or as little as you need for your organization.
 
@@ -32,7 +32,6 @@ Here are the platforms Fleet currently supports:
 - Containers (kube, etc)
 - Linux-based IoT devices
 
-
 ## Lighter than air
 Fleet is lightweight and modular.  You can use it for security without using it for MDM, and vice versa.  You can turn off features you are not using.
 
@@ -43,8 +42,6 @@ Fleet is dedicated to flexibility, accessibility, and clarity.  We think [everyo
 Fleet has no ambition to replace all of your other tools.  (Though it might replace some, if you want it to.)  Ready-to-use, enterprise-friendly integrations exist for Snowflake, Splunk, GitHub Actions, Vanta, Elastic Jira, Zendesk, and more.
 
 Fleet plays well with Munki, Chef, Puppet, and Ansible, as well as with security tools like Crowdstrike and SentinelOne.  For example, you can use the free version of Fleet to quickly report on what hosts are _actually_ running your EDR agent.
-
-While most folks prefer to use one or the other, Fleet can also coexist peacefully with Rapid7 and other agent-based vulnerability scanners.  This can be useful during migrations.
 
 #### Free as in free
 The free version of Fleet will [always be free](https://fleetdm.com/pricing).  Fleet is [independently backed](https://linkedin.com/company/fleetdm) and actively maintained with the help of many amazing [contributors](https://github.com/fleetdm/fleet/graphs/contributors).
@@ -72,13 +69,17 @@ The Fleet community is full of [kind and helpful people](https://fleetdm.com/han
 
 The landscape of cybersecurity and IT is too complex.  Let's open it up.
 
-Contributions are welcome, whether you answer questions on [Slack](#chat) / [GitHub](https://github.com/fleetdm/fleet/issues) / [StackOverflow](https://stackoverflow.com/search?q=osquery) / [LinkedIn](https://linkedin.com/company/fleetdm) / [Twitter](https://twitter.com/fleetctl), improve the documentation or [website](./website), write a tutorial, give a talk at a conference or local meetup, give an [interview on a podcast](https://fleetdm.com/podcasts), troubleshoot reported issues, or [submit a patch](https://fleetdm.com/docs/contributing/contributing).  The Fleet code of conduct is [on GitHub](https://github.com/fleetdm/fleet/blob/main/CODE_OF_CONDUCT.md).
+Contributions are welcome, whether you answer questions on [Slack](https://fleetdm.com/slack) / [GitHub](https://github.com/fleetdm/fleet/issues) / [StackOverflow](https://stackoverflow.com/search?q=osquery) / [LinkedIn](https://linkedin.com/company/fleetdm) / [Twitter](https://twitter.com/fleetctl), improve the documentation or [website](./website), write a tutorial, give a talk at a conference or local meetup, give an [interview on a podcast](https://fleetdm.com/podcasts), troubleshoot reported issues, or [submit a patch](https://fleetdm.com/docs/contributing/contributing).  The Fleet code of conduct is [on GitHub](https://github.com/fleetdm/fleet/blob/main/CODE_OF_CONDUCT.md).
+
+<!-- - Great contributions are motivated by real-world use cases or learning.
+- Some of the most valuable contributions might not touch any code at all.
+- Small, iterative, simple (boring) changes are the easiest to merge. -->
 
 ## What's next?
 To see what Fleet can do, head over to [fleetdm.com](https://fleetdm.com) and try it out for yourself, grab time with one of the maintainers to discuss, or visit the docs and roll it out to your organization.
 
 #### Production deployment
-Fleet is simple enough to [spin up for yourself](https://fleetdm.com/docs/using-fleet/learn-how-to-use-fleet).  Or you can have us [host it for you](https://fleetdm.com/pricing).  Premium features are [available](https://fleetdm.com/pricing) either way.
+Fleet is simple enough to [spin up for yourself](https://fleetdm.com/docs/get-started/tutorials-and-guides).  Or you can have us [host it for you](https://fleetdm.com/pricing).  Premium features are [available](https://fleetdm.com/pricing) either way.
 
 #### Documentation
 Complete documentation for Fleet can be found at [https://fleetdm.com/docs](https://fleetdm.com/docs).
@@ -86,3 +87,5 @@ Complete documentation for Fleet can be found at [https://fleetdm.com/docs](http
 
 ## License
 The free version of Fleet is available under the MIT license.  The commercial license is also designed to allow contributions to paid features for users whose employment agreements allow them to contribute to open source projects.  (See LICENSE.md for details.)
+
+> Fleet is built on [osquery](https://github.com/osquery/osquery), [nanoMDM](https://github.com/micromdm/nanomdm), [Nudge](https://github.com/macadmins/nudge), and [swiftDialog](https://github.com/swiftDialog/swiftDialog).

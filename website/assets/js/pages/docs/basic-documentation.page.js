@@ -3,9 +3,6 @@ parasails.registerPage('basic-documentation', {
   //  ║║║║║ ║ ║╠═╣║    ╚═╗ ║ ╠═╣ ║ ║╣
   //  ╩╝╚╝╩ ╩ ╩╩ ╩╩═╝  ╚═╝ ╩ ╩ ╩ ╩ ╚═╝
   data: {
-
-    isDocsLandingPage: false,
-
     inputTextValue: '',
     inputTimers: {},
     searchString: '',
@@ -17,7 +14,9 @@ parasails.registerPage('basic-documentation', {
     subtopics: [],
     relatedTopics: [],
     scrollDistance: 0,
-
+    navSectionsByDocsSectionSlug: {},
+    lastScrollTop: 0,
+    modal: undefined,
   },
 
   computed: {
@@ -30,37 +29,36 @@ parasails.registerPage('basic-documentation', {
   //  ║  ║╠╣ ║╣ ║  ╚╦╝║  ║  ║╣
   //  ╩═╝╩╚  ╚═╝╚═╝ ╩ ╚═╝╩═╝╚═╝
   beforeMount: function() {
-    if (this.thisPage.url === '/docs') {
-      this.isDocsLandingPage = true;
-    }
 
     this.breadcrumbs = _.trim(this.thisPage.url, /\//).split(/\//);
 
     this.pages = _.sortBy(this.markdownPages, 'htmlId');
 
+    this.pages = this.pages.filter((page)=>{
+      return _.startsWith(page.url, '/docs');
+    });
     this.pagesBySectionSlug = (() => {
-      const DOCS_SLUGS = ['using-fleet', 'deploying', 'contributing'];
-
-      let sectionSlugs = _.uniq(_.pluck(this.pages, 'url').map((url) => url.split(/\//).slice(-2)[0]));
-
+      const DOCS_SLUGS = ['get-started', 'deploy', 'configuration', 'rest-api'];
+      let sectionSlugs = _.uniq(this.pages.map((page) => page.url.split(/\//).slice(-2)[0]));
       let pagesBySectionSlug = {};
 
       for (let sectionSlug of sectionSlugs) {
         pagesBySectionSlug[sectionSlug] = this.pages.filter((page) => {
           return sectionSlug === page.url.split(/\//).slice(-2)[0];
         });
+
         // Sorting pages by pageOrderInSectionPath value, README files do not have a pageOrderInSectionPath, and FAQ pages are added to the end of the sorted array below.
         pagesBySectionSlug[sectionSlug] = _.sortBy(pagesBySectionSlug[sectionSlug], (page) => {
           if (!page.sectionRelativeRepoPath.match(/README\.md$/i) && !page.sectionRelativeRepoPath.match(/FAQ\.md$/i)) {
             return page.pageOrderInSectionPath;
           }
         });
+        this.navSectionsByDocsSectionSlug[sectionSlug] = _.groupBy(pagesBySectionSlug[sectionSlug], 'docNavCategory');
       }
       // We need to re-sort the top-level sections because their htmlIds do not reflect the correct order
       pagesBySectionSlug['docs'] = DOCS_SLUGS.map((slug) => {
         return pagesBySectionSlug['docs'].find((page) => slug === _.kebabCase(page.title));
       });
-
       // We need to move any FAQs to the end of its array
       for (let slug of DOCS_SLUGS) {
         let pages = pagesBySectionSlug[slug];
@@ -76,38 +74,29 @@ parasails.registerPage('basic-documentation', {
 
       return pagesBySectionSlug;
     })();
-    // Adding scroll event listener for scrolling sidebars with the header.
-    window.addEventListener('scroll', this.scrollSideNavigationWithHeader);
+    // Adding a scroll event listener for scrolling sidebars and showing the back to top button.
+    window.addEventListener('scroll', this.handleScrollingInDocumentation);
   },
 
   mounted: async function() {
 
     // Set a currentDocsSection value to display different Fleet premium CTAs based on what section is being viewed.
-    if(!this.isDocsLandingPage){
-      this.currentDocsSection = this.thisPage.url.split(/\//).slice(-2)[0];
-    }
-
-    // Algolia DocSearch
-    if(this.algoliaPublicKey) { // Note: Docsearch will only be enabled if sails.config.custom.algoliaPublicKey is set. If the value is undefined, the documentation search will be disabled.
-      docsearch({
-        appId: 'NZXAYZXDGH',
-        apiKey: this.algoliaPublicKey,
-        indexName: 'fleetdm',
-        inputSelector: (this.isDocsLandingPage ? '#docsearch-query-landing' : '#docsearch-query'),
-        debug: false,
-        algoliaOptions: {
-          'facetFilters': ['section:docs']
-        },
-      });
-    }
+    this.currentDocsSection = this.thisPage.url.split(/\//).slice(-2)[0];
 
     // Handle hashes in urls when coming from an external page.
     if(window.location.hash){
-      let possibleHashToScrollTo = _.trimLeft(window.location.hash, '#');
-      let hashToScrollTo = document.getElementById(possibleHashToScrollTo);
+      // If a hash was provided, we'll remove the # and any query parameters from it. (e.g., #create-an-api-only-user?utm_medium=fleetui&utm_campaign=get-api-token » create-an-api-only-user)
+      // Note: Hash links for headings in markdown content will never have a '?' beacause they are removed when convereted to kebab-case, so we can safely strip everything after one if a url contains a query parameter.
+      let possibleHashToScrollTo = _.trimLeft(window.location.hash.split('?')[0], '#');
+      let elementWithMatchingId = document.getElementById(possibleHashToScrollTo);
       // If the hash matches a header's ID, we'll scroll to that section.
-      if(hashToScrollTo){
-        hashToScrollTo.scrollIntoView();
+      if(elementWithMatchingId){
+        // Get the distance of the specified element, and reduce it by 90 so the section is not hidden by the page header.
+        let amountToScroll = elementWithMatchingId.offsetTop - 90;
+        window.scrollTo({
+          top: amountToScroll,
+          left: 0,
+        });
       }
     }
 
@@ -117,13 +106,11 @@ parasails.registerPage('basic-documentation', {
     // console.log(subtopics);
 
     this.subtopics = (() => {
-      let subtopics = $('#body-content').find('h2.markdown-heading').map((_, el) => el.innerText);
-      subtopics = $.makeArray(subtopics).map((title) => {
-        // Removing all apostrophes from the title to keep  _.kebabCase() from turning words like 'user’s' into 'user-s'
-        let kebabCaseFriendlyTitle = title.replace(/[\’\']/g, '');
+      let subtopics = $('#body-content').find('h2.markdown-heading').map((_, el) => el);
+      subtopics = $.makeArray(subtopics).map((subheading) => {
         return {
-          title,
-          url: '#' + _.kebabCase(kebabCaseFriendlyTitle.toLowerCase()),
+          title: subheading.innerText,
+          url: $(subheading).find('a.markdown-link').attr('href'),
         };
       });
       return subtopics;
@@ -132,7 +119,7 @@ parasails.registerPage('basic-documentation', {
     // https://github.com/sailshq/sailsjs.com/blob/7a74d4901dcc1e63080b502492b03fc971d3d3b2/assets/js/functions/sails-website-actions.js#L177-L239
     (function highlightThatSyntax(){
       $('pre code').each((i, block) => {
-        window.hljs.highlightBlock(block);
+        window.hljs.highlightElement(block);
       });
 
       // Make sure the <pre> tags whose code isn't being highlighted
@@ -172,19 +159,25 @@ parasails.registerPage('basic-documentation', {
       });
     })();
 
-    // Adding event handlers to the Headings on the page, allowing users to copy links by clicking on the heading.
+    // Set counters for items in ordered lists to be the value of their "start" attribute.
+    document.querySelectorAll('ol[start]').forEach((ol)=> {
+      let startValue = parseInt(ol.getAttribute('start'), 10) - 1;
+      ol.style.counterReset = 'custom-counter ' + startValue;
+    });
+
+    // Adding event handlers to the links nested in headings on the page, allowing users to copy links by clicking on the link icon next to the heading.
     let headingsOnThisPage = $('#body-content').find(':header');
     for(let key in Object.values(headingsOnThisPage)){
       let heading = headingsOnThisPage[key];
-      $(heading).click(()=> {
+      // Find the child <a> element
+      let linkElementNestedInThisHeading = _.first($(heading).find('a.markdown-link'));
+      $(linkElementNestedInThisHeading).click(()=> {
         if(typeof navigator.clipboard !== 'undefined') {
-          // Find the child <a> element
-          let linkToCopy = _.first($(heading).find('a.markdown-link'));
           // If this heading has already been clicked and still has the copied class we'll just ignore this click
           if(!$(heading).hasClass('copied')){
             // If the link's href is missing, we'll copy the current url (and remove any hashes) to the clipboard instead
-            if(linkToCopy) {
-              navigator.clipboard.writeText(linkToCopy.href);
+            if(linkElementNestedInThisHeading.href) {
+              navigator.clipboard.writeText(linkElementNestedInThisHeading.href);
             } else {
               navigator.clipboard.writeText(heading.baseURI.split('#')[0]);
             }
@@ -204,13 +197,21 @@ parasails.registerPage('basic-documentation', {
   //  ╩╝╚╝ ╩ ╚═╝╩╚═╩ ╩╚═╝ ╩ ╩╚═╝╝╚╝╚═╝
   methods: {
 
-    clickOpenChatWidget: function() {
-      if(window.HubSpotConversations && window.HubSpotConversations.widget){
-        window.HubSpotConversations.widget.open();
+    clickSwagRequestCTA: function () {
+      if(window.gtag !== undefined){
+        gtag('event','fleet_website__swag_request');
       }
+      if(window.lintrk !== undefined) {
+        window.lintrk('track', { conversion_id: 18587105 });// eslint-disable-line camelcase
+      }
+      if(window.analytics !== undefined) {
+        analytics.track('fleet_website__swag_request');
+      }
+      this.goto('https://kqphpqst851.typeform.com/to/ZfA3sOu0#from_page=docs');
     },
+
     clickCTA: function (slug) {
-      window.location = slug;
+      this.goto(slug);
     },
 
     isCurrentSection: function (section) {
@@ -232,6 +233,24 @@ parasails.registerPage('basic-documentation', {
       return this.pagesBySectionSlug[slug];
     },
 
+    // FUTURE: remove this function if we do not add subsections to docs sections.
+    // findAndSortNavSectionsByUrl: function (url='') {
+    //   let NAV_SECTION_ORDER_BY_DOCS_SLUG = {
+    //     'using-fleet':['The basics', 'Device management', 'Vuln management', 'Security compliance', 'Osquery management', 'Dig deeper'],
+    //   };
+    //   let slug = _.last(url.split(/\//));
+    //   //
+    //   if(NAV_SECTION_ORDER_BY_DOCS_SLUG[slug]) {
+    //     let orderForThisSection = NAV_SECTION_ORDER_BY_DOCS_SLUG[slug];
+    //     let sortedSection = {};
+    //     orderForThisSection.map((section)=>{
+    //       sortedSection[section] = this.navSectionsByDocsSectionSlug[slug][section];
+    //     });
+    //     this.navSectionsByDocsSectionSlug[slug] = sortedSection;
+    //   }
+    //   return this.navSectionsByDocsSectionSlug[slug];
+    // },
+
     getActiveSubtopicClass: function (currentLocation, url) {
       return _.last(currentLocation.split(/#/)) === _.last(url.split(/#/)) ? 'active' : '';
     },
@@ -241,7 +260,7 @@ parasails.registerPage('basic-documentation', {
         .chain(url.split(/\//))
         .last()
         .split(/-/)
-        .map((str) => str === 'fleet' ? 'Fleet' : str)
+        .map((str) => str === 'fleet' ? 'Fleet' : str === 'rest' ? 'REST' : str === 'api' ? 'API' : str)
         .join(' ')
         .capitalize()
         .value();
@@ -264,23 +283,48 @@ parasails.registerPage('basic-documentation', {
       this.searchString = this.inputTextValue;
     },
 
-    scrollSideNavigationWithHeader: function () {
-      var rightNavBar = document.querySelector('div[purpose="right-sidebar"]');
-      var scrollTop = window.pageYOffset || document.documentElement.scrollTop;
-      if(rightNavBar) {
-        if (scrollTop > this.scrollDistance && scrollTop > window.innerHeight * 1.5) {
-          rightNavBar.classList.add('header-hidden', 'scrolled');
-        } else {
-          if(scrollTop === 0) {
-            rightNavBar.classList.remove('header-hidden', 'scrolled');
-          } else {
-            rightNavBar.classList.remove('header-hidden');
-          }
+    handleScrollingInDocumentation: function () {
+      let rightNavBar = document.querySelector('div[purpose="right-sidebar"]');
+      let backToTopButton = document.querySelector('div[purpose="back-to-top-button"]');
+      let scrollTop = window.pageYOffset;
+      let windowHeight = window.innerHeight;
+      // If the right nav bar exists, add and remove a class based on the current scroll position.
+      if (rightNavBar) {
+        if (scrollTop > this.scrollDistance && scrollTop > windowHeight * 1.5) {
+          rightNavBar.classList.add('header-hidden');
+          this.lastScrollTop = scrollTop;
+        } else if(scrollTop < this.lastScrollTop - 60) {
+          rightNavBar.classList.remove('header-hidden');
+          this.lastScrollTop = scrollTop;
+        }
+      }
+      // If back to top button exists, add and remove a class based on the current scroll position.
+      if (backToTopButton){
+        if (scrollTop > 2500) {
+          backToTopButton.classList.add('show');
+        } else if (scrollTop === 0) {
+          backToTopButton.classList.remove('show');
         }
       }
       this.scrollDistance = scrollTop;
+    },
+    clickScrollToTop: function() {
+      window.scrollTo({
+        top: 0,
+        left: 0,
+        behavior: 'smooth',
+      });
+    },
+    clickOpenMobileSubtopicsNav: function() {
+      this.modal = 'subtopics';
+    },
+    clickOpenMobileDocsNav: function() {
+      this.modal = 'table-of-contents';
+    },
+    closeModal: async function() {
+      this.modal = '';
+      await this.forceRender();
     }
-
   }
 
 });

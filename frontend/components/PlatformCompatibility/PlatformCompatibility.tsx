@@ -1,25 +1,34 @@
 import React from "react";
 
-import { IOsqueryPlatform } from "interfaces/platform";
+import {
+  DisplayPlatform,
+  QueryableDisplayPlatform,
+  QueryablePlatform,
+} from "interfaces/platform";
 import { PLATFORM_DISPLAY_NAMES } from "utilities/constants";
 
 import TooltipWrapper from "components/TooltipWrapper";
 import Icon from "components/Icon";
 
 interface IPlatformCompatibilityProps {
-  compatiblePlatforms: IOsqueryPlatform[] | null;
+  compatiblePlatforms: any[] | null;
   error: Error | null;
 }
 
 const baseClass = "platform-compatibility";
 
-const DISPLAY_ORDER = ["macOS", "Windows", "Linux"] as IOsqueryPlatform[];
+const DISPLAY_ORDER = [
+  "macOS",
+  "Windows",
+  "Linux",
+  "ChromeOS",
+] as QueryableDisplayPlatform[];
 
 const ERROR_NO_COMPATIBLE_TABLES = Error("no tables in query");
 
 const formatPlatformsForDisplay = (
-  compatiblePlatforms: IOsqueryPlatform[]
-): IOsqueryPlatform[] => {
+  compatiblePlatforms: QueryablePlatform[]
+): DisplayPlatform[] => {
   return compatiblePlatforms.map((str) => PLATFORM_DISPLAY_NAMES[str] || str);
 };
 
@@ -46,53 +55,56 @@ const PlatformCompatibility = ({
   if (!compatiblePlatforms) {
     return null;
   }
-  if (error || !compatiblePlatforms?.length) {
-    return (
-      <span className={baseClass}>
-        <b>
-          <TooltipWrapper
-            tipContent="Estimated compatiblity based on <br /> the tables used in the query."
-            isDelayed
-          >
-            Compatible with:
-          </TooltipWrapper>
-        </b>
-
-        {displayIncompatibilityText(error || ERROR_NO_COMPATIBLE_TABLES)}
-      </span>
-    );
-  }
 
   const displayPlatforms = formatPlatformsForDisplay(compatiblePlatforms);
+
+  const renderCompatiblePlatforms = () => {
+    if (error || !compatiblePlatforms?.length) {
+      return displayIncompatibilityText(error || ERROR_NO_COMPATIBLE_TABLES);
+    }
+
+    return DISPLAY_ORDER.map((platform) => {
+      const isCompatible = displayPlatforms.includes(platform);
+      return (
+        <span key={`platform-compatibility__${platform}`} className="platform">
+          <Icon
+            name={isCompatible ? "check" : "close"}
+            className={
+              isCompatible ? "compatible-platform" : "incompatible-platform"
+            }
+            color={isCompatible ? "status-success" : "status-error"}
+            size="small"
+          />
+          {platform}
+        </span>
+      );
+    });
+  };
+
   return (
-    <span className={baseClass}>
+    <div className={baseClass}>
       <b>
         <TooltipWrapper
-          tipContent="Estimated compatiblity based on <br /> the tables used in the query."
-          isDelayed
+          tipContent={
+            <>
+              Estimated compatibility based on the <br />
+              tables used in the query. Check the <br />
+              table documentation (schema) to verify <br />
+              compatibility of individual columns.
+              <br />
+              <br />
+              Only live queries are supported on ChromeOS.
+              <br />
+              <br />
+              Querying iPhones & iPads is not supported.
+            </>
+          }
         >
           Compatible with:
         </TooltipWrapper>
       </b>
-      {DISPLAY_ORDER.map((platform) => {
-        const isCompatible = displayPlatforms.includes(platform);
-        return (
-          <span
-            key={`platform-compatibility__${platform}`}
-            className="platform"
-          >
-            <Icon
-              name={isCompatible ? "check" : "ex"}
-              className={
-                isCompatible ? "compatible-platform" : "incompatible-platform"
-              }
-              color={isCompatible ? "status-success" : "status-error"}
-            />
-            {platform}
-          </span>
-        );
-      })}
-    </span>
+      {renderCompatiblePlatforms()}
+    </div>
   );
 };
 export default PlatformCompatibility;

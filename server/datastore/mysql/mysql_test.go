@@ -20,9 +20,11 @@ import (
 	"github.com/VividCortex/mysqlerr"
 	"github.com/WatchBeam/clock"
 	"github.com/fleetdm/fleet/v4/server/config"
+	"github.com/fleetdm/fleet/v4/server/contexts/ctxdb"
+	"github.com/fleetdm/fleet/v4/server/datastore/mysql/common_mysql/testing_utils"
 	"github.com/fleetdm/fleet/v4/server/fleet"
 	"github.com/fleetdm/fleet/v4/server/ptr"
-	"github.com/go-kit/kit/log"
+	"github.com/go-kit/log"
 	"github.com/go-sql-driver/mysql"
 	"github.com/jmoiron/sqlx"
 	"github.com/stretchr/testify/assert"
@@ -34,20 +36,21 @@ func TestDatastoreReplica(t *testing.T) {
 	// with other tests when/if we move to subtests to minimize the number of
 	// databases created for tests (see #1805).
 
+	ctx := context.Background()
 	t.Run("noreplica", func(t *testing.T) {
 		ds := CreateMySQLDSWithOptions(t, nil)
 		defer ds.Close()
-		require.Equal(t, ds.reader, ds.writer)
+		require.Equal(t, ds.reader(ctx), ds.writer(ctx))
 	})
 
 	t.Run("replica", func(t *testing.T) {
-		opts := &DatastoreTestOptions{Replica: true}
+		opts := &testing_utils.DatastoreTestOptions{DummyReplica: true}
 		ds := CreateMySQLDSWithOptions(t, opts)
 		defer ds.Close()
-		require.NotEqual(t, ds.reader, ds.writer)
+		require.NotEqual(t, ds.reader(ctx), ds.writer(ctx))
 
 		// create a new host
-		host, err := ds.NewHost(context.Background(), &fleet.Host{
+		host, err := ds.NewHost(ctx, &fleet.Host{
 			DetailUpdatedAt: time.Now(),
 			LabelUpdatedAt:  time.Now(),
 			PolicyUpdatedAt: time.Now(),
@@ -62,16 +65,28 @@ func TestDatastoreReplica(t *testing.T) {
 		require.NotNil(t, host)
 
 		// trying to read it fails, not replicated yet
-		_, err = ds.Host(context.Background(), host.ID)
+		_, err = ds.Host(ctx, host.ID)
+		require.Error(t, err)
+		require.True(t, errors.Is(err, sql.ErrNoRows), err)
+
+		// force read from primary works
+		ctx = ctxdb.RequirePrimary(ctx, true)
+		got, err := ds.Host(ctx, host.ID)
+		require.NoError(t, err)
+		require.Equal(t, host.ID, got.ID)
+
+		// but from replica still fails
+		ctx = ctxdb.RequirePrimary(ctx, false)
+		_, err = ds.Host(ctx, host.ID)
 		require.Error(t, err)
 		require.True(t, errors.Is(err, sql.ErrNoRows))
 
 		opts.RunReplication()
 
-		// now it can read it
-		host2, err := ds.Host(context.Background(), host.ID)
+		// now it can read it from replica
+		got, err = ds.Host(ctx, host.ID)
 		require.NoError(t, err)
-		require.Equal(t, host.ID, host2.ID)
+		require.Equal(t, host.ID, got.ID)
 	})
 }
 
@@ -230,9 +245,9 @@ func mockDatastore(t *testing.T) (sqlmock.Sqlmock, *Datastore) {
 	require.NoError(t, err)
 	dbmock := sqlx.NewDb(db, "sqlmock")
 	ds := &Datastore{
-		writer: dbmock,
-		reader: dbmock,
-		logger: log.NewNopLogger(),
+		primary: dbmock,
+		replica: dbmock,
+		logger:  log.NewNopLogger(),
 	}
 
 	return mock, ds
@@ -349,7 +364,7 @@ func TestAppendListOptionsToSQL(t *testing.T) {
 		OrderKey: "***name***",
 	}
 
-	actual := appendListOptionsToSQL(sql, &opts)
+	actual, _ := appendListOptionsToSQL(sql, &opts)
 	expected := "SELECT * FROM my_table ORDER BY `name` ASC LIMIT 1000000"
 	if actual != expected {
 		t.Error("Expected", expected, "Actual", actual)
@@ -357,7 +372,7 @@ func TestAppendListOptionsToSQL(t *testing.T) {
 
 	sql = "SELECT * FROM my_table"
 	opts.OrderDirection = fleet.OrderDescending
-	actual = appendListOptionsToSQL(sql, &opts)
+	actual, _ = appendListOptionsToSQL(sql, &opts)
 	expected = "SELECT * FROM my_table ORDER BY `name` DESC LIMIT 1000000"
 	if actual != expected {
 		t.Error("Expected", expected, "Actual", actual)
@@ -368,7 +383,7 @@ func TestAppendListOptionsToSQL(t *testing.T) {
 	}
 
 	sql = "SELECT * FROM my_table"
-	actual = appendListOptionsToSQL(sql, &opts)
+	actual, _ = appendListOptionsToSQL(sql, &opts)
 	expected = "SELECT * FROM my_table LIMIT 10"
 	if actual != expected {
 		t.Error("Expected", expected, "Actual", actual)
@@ -376,7 +391,7 @@ func TestAppendListOptionsToSQL(t *testing.T) {
 
 	sql = "SELECT * FROM my_table"
 	opts.Page = 2
-	actual = appendListOptionsToSQL(sql, &opts)
+	actual, _ = appendListOptionsToSQL(sql, &opts)
 	expected = "SELECT * FROM my_table LIMIT 10 OFFSET 20"
 	if actual != expected {
 		t.Error("Expected", expected, "Actual", actual)
@@ -384,7 +399,7 @@ func TestAppendListOptionsToSQL(t *testing.T) {
 
 	opts = fleet.ListOptions{}
 	sql = "SELECT * FROM my_table"
-	actual = appendListOptionsToSQL(sql, &opts)
+	actual, _ = appendListOptionsToSQL(sql, &opts)
 	expected = "SELECT * FROM my_table LIMIT 1000000"
 
 	if actual != expected {
@@ -581,7 +596,6 @@ func TestWhereFilterHostsByTeams(t *testing.T) {
 	for _, tt := range testCases {
 		tt := tt
 		t.Run("", func(t *testing.T) {
-			t.Parallel()
 			ds := &Datastore{logger: log.NewNopLogger()}
 			sql := ds.whereFilterHostsByTeams(tt.filter, "hosts")
 			assert.Equal(t, tt.expected, sql)
@@ -617,7 +631,6 @@ func TestWhereOmitIDs(t *testing.T) {
 	for _, tt := range testCases {
 		tt := tt
 		t.Run("", func(t *testing.T) {
-			t.Parallel()
 			ds := &Datastore{logger: log.NewNopLogger()}
 			sql := ds.whereOmitIDs("id", tt.omits)
 			assert.Equal(t, tt.expected, sql)
@@ -692,7 +705,7 @@ func TestWithTxWillRollbackWhenPanic(t *testing.T) {
 func TestNewReadsPasswordFromDisk(t *testing.T) {
 	passwordFile, err := os.CreateTemp(t.TempDir(), "*.passwordtest")
 	require.NoError(t, err)
-	_, err = passwordFile.WriteString(testPassword)
+	_, err = passwordFile.WriteString(testing_utils.TestPassword)
 	require.NoError(t, err)
 	passwordPath := passwordFile.Name()
 	require.NoError(t, passwordFile.Close())
@@ -701,10 +714,10 @@ func TestNewReadsPasswordFromDisk(t *testing.T) {
 
 	// Create a datastore client in order to run migrations as usual
 	mysqlConfig := config.MysqlConfig{
-		Username:     testUsername,
+		Username:     testing_utils.TestUsername,
 		Password:     "",
 		PasswordPath: passwordPath,
-		Address:      testAddress,
+		Address:      testing_utils.TestAddress,
 		Database:     dbName,
 	}
 	ds, err := newDSWithConfig(t, dbName, mysqlConfig)
@@ -716,7 +729,8 @@ func TestNewReadsPasswordFromDisk(t *testing.T) {
 func newDSWithConfig(t *testing.T, dbName string, config config.MysqlConfig) (*Datastore, error) {
 	db, err := sql.Open(
 		"mysql",
-		fmt.Sprintf("%s:%s@tcp(%s)/?multiStatements=true", testUsername, testPassword, testAddress),
+		fmt.Sprintf("%s:%s@tcp(%s)/?multiStatements=true", testing_utils.TestUsername, testing_utils.TestPassword,
+			testing_utils.TestAddress),
 	)
 	require.NoError(t, err)
 	_, err = db.Exec(fmt.Sprintf("DROP DATABASE IF EXISTS %s; CREATE DATABASE %s;", dbName, dbName))
@@ -770,9 +784,9 @@ func TestNewUsesRegisterTLS(t *testing.T) {
 	cert, key := generateTestCert(t)
 
 	mysqlConfig := config.MysqlConfig{
-		Username: testUsername,
-		Password: testPassword,
-		Address:  testAddress,
+		Username: testing_utils.TestUsername,
+		Password: testing_utils.TestPassword,
+		Address:  testing_utils.TestAddress,
 		Database: dbName,
 		TLSCA:    ca,
 		TLSCert:  cert,
@@ -783,7 +797,7 @@ func TestNewUsesRegisterTLS(t *testing.T) {
 	require.Error(t, err)
 	// TODO: we're using a Regexp because the message is different depending on the version of mysql,
 	// we should refactor and use different error types instead.
-	require.Regexp(t, "^(x509|tls)", err.Error())
+	require.Regexp(t, "(x509|tls|EOF)", err.Error())
 }
 
 func TestWhereFilterTeams(t *testing.T) {
@@ -842,7 +856,6 @@ func TestWhereFilterTeams(t *testing.T) {
 	for _, tt := range testCases {
 		tt := tt
 		t.Run("", func(t *testing.T) {
-			t.Parallel()
 			ds := &Datastore{logger: log.NewNopLogger()}
 			sql := ds.whereFilterTeams(tt.filter, "t")
 			assert.Equal(t, tt.expected, sql)
@@ -945,27 +958,6 @@ func TestCompareVersions(t *testing.T) {
 	}
 }
 
-func TestRxLooseEmail(t *testing.T) {
-	testCases := []struct {
-		str   string
-		match bool
-	}{
-		{"foo", false},
-		{"", false},
-		{"foo@example", false},
-		{"foo@example.com", true},
-		{"foo+bar@example.com", true},
-		{"foo.bar@example.com", true},
-		{"foo.bar@baz.example.com", true},
-	}
-
-	for _, tc := range testCases {
-		t.Run(tc.str, func(t *testing.T) {
-			assert.Equal(t, tc.match, rxLooseEmail.MatchString(tc.str))
-		})
-	}
-}
-
 func TestDebugs(t *testing.T) {
 	ds := CreateMySQLDS(t)
 
@@ -978,14 +970,14 @@ func TestDebugs(t *testing.T) {
 	require.Greater(t, len(processList), 0)
 }
 
-func TestANSIQuotesEnabled(t *testing.T) {
-	// Ensure sql_mode=ANSI_QUOTES is enabled for tests
+func TestWantedModesEnabled(t *testing.T) {
 	ds := CreateMySQLDS(t)
 
 	var sqlMode string
-	err := ds.writer.GetContext(context.Background(), &sqlMode, `SELECT @@SQL_MODE`)
+	err := ds.writer(context.Background()).GetContext(context.Background(), &sqlMode, `SELECT @@SQL_MODE`)
 	require.NoError(t, err)
 	require.Contains(t, sqlMode, "ANSI_QUOTES")
+	require.Contains(t, sqlMode, "ONLY_FULL_GROUP_BY")
 }
 
 func Test_buildWildcardMatchPhrase(t *testing.T) {
@@ -1038,4 +1030,355 @@ func Test_buildWildcardMatchPhrase(t *testing.T) {
 			assert.Equalf(t, tt.want, buildWildcardMatchPhrase(tt.args.matchQuery), "buildWildcardMatchPhrase(%v)", tt.args.matchQuery)
 		})
 	}
+}
+
+func TestWhereFilterGlobalOrTeamIDByTeams(t *testing.T) {
+	t.Parallel()
+
+	testCases := []struct {
+		name     string
+		filter   fleet.TeamFilter
+		expected string
+	}{
+		// No teams or global role
+		{
+			name: "empty user",
+			filter: fleet.TeamFilter{
+				User: &fleet.User{},
+			},
+			expected: "FALSE",
+		},
+		{
+			name: "empty user teams",
+			filter: fleet.TeamFilter{
+				User: &fleet.User{Teams: []fleet.UserTeam{}},
+			},
+			expected: "FALSE",
+		},
+
+		// Global role
+		{
+			name: "global admin",
+			filter: fleet.TeamFilter{
+				User: &fleet.User{GlobalRole: ptr.String(fleet.RoleAdmin)},
+			},
+			expected: "hosts.team_id = 0 AND hosts.global_stats = 1",
+		},
+		{
+			name: "global maintainer",
+			filter: fleet.TeamFilter{
+				User: &fleet.User{GlobalRole: ptr.String(fleet.RoleMaintainer)},
+			},
+			expected: "hosts.team_id = 0 AND hosts.global_stats = 1",
+		},
+		{
+			name: "global observer",
+			filter: fleet.TeamFilter{
+				User: &fleet.User{GlobalRole: ptr.String(fleet.RoleObserver)},
+			},
+			expected: "FALSE",
+		},
+		{
+			name: "global observer include",
+			filter: fleet.TeamFilter{
+				User:            &fleet.User{GlobalRole: ptr.String(fleet.RoleObserver)},
+				IncludeObserver: true,
+			},
+			expected: "hosts.team_id = 0 AND hosts.global_stats = 1",
+		},
+
+		// Team roles
+		{
+			name: "team observer",
+			filter: fleet.TeamFilter{
+				User: &fleet.User{
+					Teams: []fleet.UserTeam{
+						{Role: fleet.RoleObserver, Team: fleet.Team{ID: 1}},
+					},
+				},
+			},
+			expected: "FALSE",
+		},
+		{
+			name: "team observer include",
+			filter: fleet.TeamFilter{
+				User: &fleet.User{
+					Teams: []fleet.UserTeam{
+						{Role: fleet.RoleObserver, Team: fleet.Team{ID: 1}},
+					},
+				},
+				IncludeObserver: true,
+			},
+			expected: "hosts.team_id IN (1)",
+		},
+		{
+			name: "multi team observer",
+			filter: fleet.TeamFilter{
+				User: &fleet.User{
+					Teams: []fleet.UserTeam{
+						{Role: fleet.RoleObserver, Team: fleet.Team{ID: 1}},
+						{Role: fleet.RoleObserver, Team: fleet.Team{ID: 2}},
+					},
+				},
+			},
+			expected: "FALSE",
+		},
+		{
+			name: "multi team maintainer and observer",
+			filter: fleet.TeamFilter{
+				User: &fleet.User{
+					Teams: []fleet.UserTeam{
+						{Role: fleet.RoleObserver, Team: fleet.Team{ID: 1}},
+						{Role: fleet.RoleMaintainer, Team: fleet.Team{ID: 2}},
+					},
+				},
+			},
+			expected: "hosts.team_id IN (2)",
+		},
+		{
+			name: "multi team maintainer and observer include",
+			filter: fleet.TeamFilter{
+				User: &fleet.User{
+					Teams: []fleet.UserTeam{
+						{Role: fleet.RoleObserver, Team: fleet.Team{ID: 1}},
+						{Role: fleet.RoleMaintainer, Team: fleet.Team{ID: 2}},
+					},
+				},
+				IncludeObserver: true,
+			},
+			expected: "hosts.team_id IN (1,2)",
+		},
+		{
+			name: "multi team maintainer and observer with invalid role",
+			filter: fleet.TeamFilter{
+				User: &fleet.User{
+					Teams: []fleet.UserTeam{
+						{Role: fleet.RoleObserver, Team: fleet.Team{ID: 1}},
+						{Role: fleet.RoleMaintainer, Team: fleet.Team{ID: 2}},
+						// Invalid role should be ignored
+						{Role: "bad", Team: fleet.Team{ID: 37}},
+					},
+				},
+			},
+			expected: "hosts.team_id IN (2)",
+		},
+		{
+			name: "multi team maintainer and observer and admin",
+			filter: fleet.TeamFilter{
+				User: &fleet.User{
+					Teams: []fleet.UserTeam{
+						{Role: fleet.RoleObserver, Team: fleet.Team{ID: 1}},
+						{Role: fleet.RoleMaintainer, Team: fleet.Team{ID: 2}},
+						{Role: fleet.RoleAdmin, Team: fleet.Team{ID: 3}},
+						// Invalid role should be ignored
+					},
+				},
+			},
+			expected: "hosts.team_id IN (2,3)",
+		},
+		{
+			name: "team id only",
+			filter: fleet.TeamFilter{
+				TeamID: ptr.Uint(1),
+			},
+			expected: "FALSE",
+		},
+		{
+			name: "team id with observer include",
+			filter: fleet.TeamFilter{
+				User:            &fleet.User{GlobalRole: ptr.String(fleet.RoleObserver)},
+				IncludeObserver: true,
+				TeamID:          ptr.Uint(1),
+			},
+			expected: "hosts.team_id = 1",
+		},
+		{
+			name: "team id with observer exclude",
+			filter: fleet.TeamFilter{
+				User:            &fleet.User{GlobalRole: ptr.String(fleet.RoleObserver)},
+				IncludeObserver: false,
+				TeamID:          ptr.Uint(1),
+			},
+			expected: "FALSE",
+		},
+		{
+			name: "team id with admin exclude observer",
+			filter: fleet.TeamFilter{
+				User:            &fleet.User{GlobalRole: ptr.String(fleet.RoleAdmin)},
+				IncludeObserver: false,
+				TeamID:          ptr.Uint(1),
+			},
+			expected: "hosts.team_id = 1",
+		},
+		{
+			name: "team id not in multiple team roles",
+			filter: fleet.TeamFilter{
+				User: &fleet.User{
+					Teams: []fleet.UserTeam{
+						{Role: fleet.RoleObserver, Team: fleet.Team{ID: 1}},
+						{Role: fleet.RoleMaintainer, Team: fleet.Team{ID: 2}},
+					},
+				},
+				TeamID: ptr.Uint(3),
+			},
+			expected: "FALSE",
+		},
+		{
+			name: "team id in multiple team roles",
+			filter: fleet.TeamFilter{
+				User: &fleet.User{
+					Teams: []fleet.UserTeam{
+						{Role: fleet.RoleObserver, Team: fleet.Team{ID: 1}},
+						{Role: fleet.RoleMaintainer, Team: fleet.Team{ID: 2}},
+					},
+				},
+				TeamID: ptr.Uint(2),
+			},
+			expected: "hosts.team_id = 2",
+		},
+	}
+
+	for _, tt := range testCases {
+		tt := tt
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			ds := &Datastore{logger: log.NewNopLogger()}
+			sql := ds.whereFilterGlobalOrTeamIDByTeams(tt.filter, "hosts")
+			assert.Equal(t, tt.expected, sql)
+		})
+	}
+}
+
+func TestBatchProcessDB(t *testing.T) {
+	type testData struct {
+		id    int
+		value string
+	}
+
+	payload := []interface{}{
+		&testData{id: 1, value: "a"},
+		&testData{id: 2, value: "b"},
+		&testData{id: 3, value: "c"},
+	}
+
+	generateValueArgs := func(item interface{}) (string, []any) {
+		p := item.(*testData)
+		valuePart := "(?, ?),"
+		args := []any{p.id, p.value}
+		return valuePart, args
+	}
+
+	t.Run("TestEmptyPayload", func(t *testing.T) {
+		executeBatch := func(valuePart string, args []any) error {
+			return errors.New("execute shouldn't be called for an empty payload")
+		}
+		err := batchProcessDB([]interface{}{}, 1000, generateValueArgs, executeBatch)
+		require.NoError(t, err)
+	})
+
+	t.Run("TestSingleBatch", func(t *testing.T) {
+		callCount := 0
+		executeBatch := func(valuePart string, args []any) error {
+			callCount++
+			require.Equal(t, 2, len(args)/2) // each item adds 2 args
+			return nil
+		}
+		err := batchProcessDB(payload[:2], 2, generateValueArgs, executeBatch)
+		require.NoError(t, err)
+		require.Equal(t, 1, callCount)
+	})
+
+	t.Run("TestMultipleBatches", func(t *testing.T) {
+		callCount := 0
+		executeBatch := func(valuePart string, args []any) error {
+			callCount++
+			require.Equal(t, 2/callCount, len(args)/2) // each item adds 2 args
+			return nil
+		}
+		err := batchProcessDB(payload, 2, generateValueArgs, executeBatch)
+		require.NoError(t, err)
+		require.Equal(t, 2, callCount)
+	})
+}
+
+func TestGetContextTryStmt(t *testing.T) {
+	ctx := context.Background()
+
+	dbMock, ds := mockDatastore(t)
+	ds.stmtCache = map[string]*sqlx.Stmt{}
+
+	t.Run("get with unknown statement error", func(t *testing.T) {
+		count := 0
+		query := "SELECT 1"
+
+		// first call to cache the statement
+		dbMock.ExpectPrepare(query)
+		mockResult := sqlmock.NewRows([]string{query})
+		mockResult.AddRow("1")
+		dbMock.ExpectQuery(query).WillReturnRows(mockResult)
+		err := ds.getContextTryStmt(ctx, &count, query)
+		require.NoError(t, err)
+		require.NoError(t, dbMock.ExpectationsWereMet())
+
+		// verify that the statement was cached
+		stmt := ds.loadOrPrepareStmt(ctx, query)
+		require.NotNil(t, stmt)
+
+		// call again to trigger the unknown statement error and ensure it retries
+		// first query, make it fail
+		queryMock := dbMock.ExpectQuery(query)
+		mySQLErr := &mysql.MySQLError{
+			Number: mysqlerr.ER_UNKNOWN_STMT_HANDLER,
+		}
+		queryMock.WillReturnError(mySQLErr)
+
+		// after the failure, a second call is made, this time without
+		// the prepared statement
+		mockResult = sqlmock.NewRows([]string{query})
+		mockResult.AddRow("1")
+		dbMock.ExpectQuery(query).WillReturnRows(mockResult)
+
+		// make the call and verify we removed the prepared statement
+		err = ds.getContextTryStmt(ctx, &count, query)
+		require.NoError(t, err)
+		require.NoError(t, dbMock.ExpectationsWereMet())
+		stmt = ds.loadOrPrepareStmt(ctx, query)
+		require.Nil(t, stmt)
+	})
+
+	t.Run("get with other error", func(t *testing.T) {
+		dbMock, ds := mockDatastore(t)
+		ds.stmtCache = map[string]*sqlx.Stmt{}
+		count := 0
+		query := "SELECT 1"
+
+		// first call to cache the statement
+		dbMock.ExpectPrepare(query)
+		mockResult := sqlmock.NewRows([]string{query})
+		mockResult.AddRow("1")
+		dbMock.ExpectQuery(query).WillReturnRows(mockResult)
+		err := ds.getContextTryStmt(ctx, &count, query)
+		require.NoError(t, err)
+		require.Equal(t, 1, count)
+		require.NoError(t, dbMock.ExpectationsWereMet())
+
+		// verify that the statement was cached
+		stmt := ds.loadOrPrepareStmt(ctx, query)
+		require.NotNil(t, stmt)
+
+		// return a duplicate error
+		queryMock := dbMock.ExpectQuery(query)
+		mySQLErr := &mysql.MySQLError{
+			Number: mysqlerr.ER_DUP_ENTRY,
+		}
+		queryMock.WillReturnError(mySQLErr)
+
+		count = 0
+		err = ds.getContextTryStmt(ctx, &count, query)
+		require.ErrorIs(t, mySQLErr, err)
+		require.NoError(t, dbMock.ExpectationsWereMet())
+		stmt = ds.loadOrPrepareStmt(ctx, query)
+		require.NotNil(t, stmt)
+	})
+
 }

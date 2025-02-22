@@ -2,7 +2,6 @@ package service
 
 import (
 	"context"
-	"fmt"
 	"html/template"
 	"strings"
 
@@ -13,25 +12,8 @@ import (
 	"github.com/fleetdm/fleet/v4/server/contexts/viewer"
 	"github.com/fleetdm/fleet/v4/server/fleet"
 	"github.com/fleetdm/fleet/v4/server/mail"
+	"github.com/fleetdm/fleet/v4/server/service/middleware/endpoint_utils"
 )
-
-// mailError is set when an error performing mail operations
-type mailError struct {
-	message string
-}
-
-func (e mailError) Error() string {
-	return fmt.Sprintf("a mail error occurred: %s", e.message)
-}
-
-func (e mailError) MailError() []map[string]string {
-	return []map[string]string{
-		{
-			"name":   "base",
-			"reason": e.message,
-		},
-	}
-}
 
 func (svc *Service) NewAppConfig(ctx context.Context, p fleet.AppConfig) (*fleet.AppConfig, error) {
 	// skipauth: No user context yet when the app config is first created.
@@ -69,6 +51,11 @@ func (svc *Service) sendTestEmail(ctx context.Context, config *fleet.AppConfig) 
 		return fleet.ErrNoContext
 	}
 
+	var smtpSettings fleet.SMTPSettings
+	if config.SMTPSettings != nil {
+		smtpSettings = *config.SMTPSettings
+	}
+
 	testMail := fleet.Email{
 		Subject: "Hello from Fleet",
 		To:      []string{vc.User.Email},
@@ -76,11 +63,12 @@ func (svc *Service) sendTestEmail(ctx context.Context, config *fleet.AppConfig) 
 			BaseURL:  template.URL(config.ServerSettings.ServerURL + svc.config.Server.URLPrefix),
 			AssetURL: getAssetURL(),
 		},
-		Config: config,
+		SMTPSettings: smtpSettings,
+		ServerURL:    config.ServerSettings.ServerURL,
 	}
 
 	if err := mail.Test(svc.mailService, testMail); err != nil {
-		return mailError{message: err.Error()}
+		return endpoint_utils.MailError{Message: err.Error()}
 	}
 	return nil
 }
@@ -101,14 +89,11 @@ func (svc *Service) License(ctx context.Context) (*fleet.LicenseInfo, error) {
 }
 
 func (svc *Service) SetupRequired(ctx context.Context) (bool, error) {
-	users, err := svc.ds.ListUsers(ctx, fleet.UserListOptions{ListOptions: fleet.ListOptions{Page: 0, PerPage: 1}})
+	hasUsers, err := svc.ds.HasUsers(ctx)
 	if err != nil {
 		return false, err
 	}
-	if len(users) == 0 {
-		return true, nil
-	}
-	return false, nil
+	return !hasUsers, nil
 }
 
 func (svc *Service) UpdateIntervalConfig(ctx context.Context) (*fleet.UpdateIntervalConfig, error) {

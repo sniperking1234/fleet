@@ -18,7 +18,7 @@ func (sta ObjectStateString) unpack() (OperationType, string) {
 	return NewOperationType(parts[0]), parts[1]
 }
 
-// Eval evaluates the provided value againts the encoded value in sta according to the encoded
+// Eval evaluates the provided value against the encoded value in sta according to the encoded
 // operation.
 func (sta ObjectStateString) Eval(other string) (bool, error) {
 	op, val := sta.unpack()
@@ -29,9 +29,9 @@ func (sta ObjectStateString) Eval(other string) (bool, error) {
 	case NotEqual:
 		return val != other, nil
 	case CaseInsensitiveEquals:
-		return strings.ToLower(val) == strings.ToLower(other), nil
+		return strings.EqualFold(val, other), nil
 	case CaseInsensitiveNotEqual:
-		return strings.ToLower(val) != strings.ToLower(other), nil
+		return !strings.EqualFold(val, other), nil
 	case PatternMatch:
 		r, err := regexp.Compile(val)
 		if err != nil {

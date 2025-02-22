@@ -1,5 +1,5 @@
 import PropTypes from "prop-types";
-import { IOsqueryPlatform } from "./platform";
+import { QueryablePlatform, QueryableDisplayPlatform } from "./platform";
 
 export default PropTypes.shape({
   columns: PropTypes.arrayOf(
@@ -19,8 +19,12 @@ export type ColumnType =
   | "bigint"
   | "double"
   | "text"
-  | "unsigned_bigint";
+  | "unsigned_bigint"
+  | "STRING"
+  | "string"; // TODO: Why do we have type string, STRING, and text in schema.json?
 
+// TODO: Replace with one or the other once osquery_fleet_schema.json follows one type or other
+export type TableSchemaPlatform = QueryableDisplayPlatform | QueryablePlatform;
 export interface IQueryTableColumn {
   name: string;
   description: string;
@@ -28,7 +32,7 @@ export interface IQueryTableColumn {
   hidden: boolean;
   required: boolean;
   index: boolean;
-  platforms?: IOsqueryPlatform[];
+  platforms?: TableSchemaPlatform[];
   requires_user_context?: boolean;
 }
 
@@ -36,20 +40,22 @@ export interface IOsQueryTable {
   name: string;
   description: string;
   url: string;
-  platforms: IOsqueryPlatform[];
+  platforms: TableSchemaPlatform[];
   evented: boolean;
   cacheable: boolean;
   columns: IQueryTableColumn[];
   examples?: string;
   notes?: string;
+  hidden?: boolean;
 }
 
+// Also used for testing
 export const DEFAULT_OSQUERY_TABLE: IOsQueryTable = {
   name: "users",
   description:
     "Local user accounts (including domain accounts that have logged on locally (Windows)).",
   url: "https://github.com/osquery/osquery/blob/master/specs/users.table",
-  platforms: ["darwin", "linux", "windows"],
+  platforms: ["darwin", "linux", "windows", "chrome"],
   evented: false,
   cacheable: false,
   columns: [
@@ -68,6 +74,7 @@ export const DEFAULT_OSQUERY_TABLE: IOsQueryTable = {
       hidden: false,
       required: false,
       index: false,
+      platforms: ["macOS", "Windows", "Linux"],
     },
     {
       name: "uid_signed",
@@ -76,6 +83,7 @@ export const DEFAULT_OSQUERY_TABLE: IOsQueryTable = {
       hidden: false,
       required: false,
       index: false,
+      platforms: ["macOS", "Windows", "Linux"],
     },
     {
       name: "gid_signed",
@@ -84,6 +92,7 @@ export const DEFAULT_OSQUERY_TABLE: IOsQueryTable = {
       hidden: false,
       required: false,
       index: false,
+      platforms: ["macOS", "Windows", "Linux"],
     },
     {
       name: "username",
@@ -100,6 +109,7 @@ export const DEFAULT_OSQUERY_TABLE: IOsQueryTable = {
       hidden: false,
       required: false,
       index: false,
+      platforms: ["macOS", "Windows", "Linux"],
     },
     {
       name: "directory",
@@ -108,6 +118,7 @@ export const DEFAULT_OSQUERY_TABLE: IOsQueryTable = {
       hidden: false,
       required: false,
       index: false,
+      platforms: ["macOS", "Windows", "Linux"],
     },
     {
       name: "shell",
@@ -116,6 +127,7 @@ export const DEFAULT_OSQUERY_TABLE: IOsQueryTable = {
       hidden: false,
       required: false,
       index: false,
+      platforms: ["macOS", "Windows", "Linux"],
     },
     {
       name: "uuid",
@@ -133,6 +145,7 @@ export const DEFAULT_OSQUERY_TABLE: IOsQueryTable = {
       hidden: true,
       required: false,
       index: false,
+      platforms: ["Windows"],
     },
     {
       name: "is_hidden",
@@ -141,6 +154,7 @@ export const DEFAULT_OSQUERY_TABLE: IOsQueryTable = {
       hidden: false,
       required: false,
       index: false,
+      platforms: ["macOS"],
     },
     {
       name: "pid_with_namespace",
@@ -150,5 +164,17 @@ export const DEFAULT_OSQUERY_TABLE: IOsQueryTable = {
       required: false,
       index: false,
     },
+    {
+      name: "email",
+      description: "Email",
+      type: "text",
+      hidden: false,
+      required: false,
+      index: false,
+      platforms: ["chrome"],
+    },
   ],
+  notes: "",
+  examples:
+    "List users that have interactive access via a shell that isn't false.\n```\nSELECT * FROM users WHERE shell!='/usr/bin/false';\n```",
 };

@@ -13,6 +13,13 @@ interface IHostLinkProps {
   platformLabelId?: number;
   /** Shows right chevron without text */
   condensed?: boolean;
+  excludeChevron?: boolean;
+  responsive?: boolean;
+  customText?: string;
+  /** Table links shows on row hover and tab focus only */
+  rowHover?: boolean;
+  // don't actually create a link, useful when click is handled by an ancestor
+  noLink?: boolean;
 }
 
 const baseClass = "view-all-hosts-link";
@@ -22,8 +29,16 @@ const ViewAllHostsLink = ({
   className,
   platformLabelId,
   condensed = false,
+  excludeChevron = false,
+  responsive = false,
+  customText,
+  rowHover = false,
+  noLink = false,
 }: IHostLinkProps): JSX.Element => {
-  const viewAllHostsLinkClass = classnames(baseClass, className);
+  const viewAllHostsLinkClass = classnames(baseClass, className, {
+    [`${baseClass}__condensed`]: condensed,
+    "row-hover-link": rowHover,
+  });
 
   const endpoint = platformLabelId
     ? PATHS.MANAGE_HOSTS_LABEL(platformLabelId)
@@ -34,14 +49,32 @@ const ViewAllHostsLink = ({
     : endpoint;
 
   return (
-    <Link className={viewAllHostsLinkClass} to={path} title="host-link">
-      {!condensed && <span>View all hosts</span>}
-      <Icon
-        name="chevron"
-        className={`${baseClass}__icon`}
-        direction="right"
-        color="core-fleet-blue"
-      />
+    <Link
+      className={viewAllHostsLinkClass}
+      to={noLink ? "" : path}
+      onClick={(e) => {
+        e.stopPropagation(); // Allows for link to be clickable in a clickable row
+      }}
+      onKeyDown={(e) => {
+        if (e.key === "Enter") {
+          e.stopPropagation(); // Allows for link to be keyboard accessible in a clickable row
+        }
+      }}
+    >
+      {!condensed && (
+        <span
+          className={`${baseClass}__text${responsive ? "--responsive" : ""}`}
+        >
+          {customText ?? "View all hosts"}
+        </span>
+      )}
+      {!excludeChevron && (
+        <Icon
+          name="chevron-right"
+          className={`${baseClass}__icon`}
+          color="core-fleet-blue"
+        />
+      )}
     </Link>
   );
 };

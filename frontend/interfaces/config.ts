@@ -1,92 +1,11 @@
 /* Config interface is a flattened version of the fleet/config API response */
-
 import {
   IWebhookHostStatus,
   IWebhookFailingPolicies,
   IWebhookSoftwareVulnerabilities,
+  IWebhookActivities,
 } from "interfaces/webhook";
-import PropTypes from "prop-types";
-import { IIntegrations } from "./integration";
-
-export default PropTypes.shape({
-  org_name: PropTypes.string,
-  org_logo_url: PropTypes.string,
-  server_url: PropTypes.string,
-  live_query_disabled: PropTypes.bool,
-  enable_analytics: PropTypes.bool,
-  enable_smtp: PropTypes.bool,
-  configured: PropTypes.bool,
-  sender_address: PropTypes.string,
-  server: PropTypes.string,
-  port: PropTypes.number,
-  authentication_type: PropTypes.string,
-  user_name: PropTypes.string,
-  password: PropTypes.string,
-  enable_ssl_tls: PropTypes.bool,
-  authentication_method: PropTypes.string,
-  domain: PropTypes.string,
-  verify_sll_certs: PropTypes.bool,
-  enable_start_tls: PropTypes.bool,
-  entity_id: PropTypes.string,
-  idp_image_url: PropTypes.string,
-  metadata: PropTypes.string,
-  metadata_url: PropTypes.string,
-  idp_name: PropTypes.string,
-  enable_sso: PropTypes.bool,
-  enable_sso_idp_login: PropTypes.bool,
-  enable_jit_provisioning: PropTypes.bool,
-  host_expiry_enabled: PropTypes.bool,
-  host_expiry_window: PropTypes.number,
-  agent_options: PropTypes.string,
-  tier: PropTypes.string,
-  organization: PropTypes.string,
-  device_count: PropTypes.number,
-  expiration: PropTypes.string,
-  mdm: PropTypes.shape({
-    enabled_and_configured: PropTypes.bool,
-    apple_bm_terms_expired: PropTypes.bool,
-    apple_bm_enabled_and_configured: PropTypes.bool,
-    macos_updates: PropTypes.shape({
-      minimum_version: PropTypes.string,
-      deadline: PropTypes.string,
-    }),
-  }),
-  note: PropTypes.string,
-  // vulnerability_settings: PropTypes.any, TODO
-  enable_host_status_webhook: PropTypes.bool,
-  destination_url: PropTypes.string,
-  host_percentage: PropTypes.number,
-  days_count: PropTypes.number,
-  logging: PropTypes.shape({
-    debug: PropTypes.bool,
-    json: PropTypes.bool,
-    result: PropTypes.shape({
-      plugin: PropTypes.string,
-      config: PropTypes.shape({
-        status_log_file: PropTypes.string,
-        result_log_file: PropTypes.string,
-        enable_log_rotation: PropTypes.bool,
-        enable_log_compression: PropTypes.bool,
-      }),
-    }),
-    status: PropTypes.shape({
-      plugin: PropTypes.string,
-      config: PropTypes.shape({
-        status_log_file: PropTypes.string,
-        result_log_file: PropTypes.string,
-        enable_log_rotation: PropTypes.bool,
-        enable_log_compression: PropTypes.bool,
-      }),
-    }),
-  }),
-  email: PropTypes.shape({
-    backend: PropTypes.string,
-    config: PropTypes.shape({
-      region: PropTypes.string,
-      source_arn: PropTypes.string,
-    }),
-  }),
-});
+import { IGlobalIntegrations } from "./integration";
 
 export interface ILicense {
   tier: string;
@@ -96,7 +15,7 @@ export interface ILicense {
   organization: string;
 }
 
-interface IEndUserAuthentication {
+export interface IEndUserAuthentication {
   entity_id: string;
   idp_name: string;
   issuer_uri: string;
@@ -106,67 +25,71 @@ interface IEndUserAuthentication {
 
 export interface IMacOsMigrationSettings {
   enable: boolean;
-  mode: "voluntary" | "forced";
+  mode: "voluntary" | "forced" | "";
   webhook_url: string;
 }
 
-export interface IMdmConfig {
-  enabled_and_configured: boolean;
-  apple_bm_terms_expired: boolean;
-  apple_bm_enabled_and_configured: boolean;
-  end_user_authentication: IEndUserAuthentication;
-  macos_updates: {
-    minimum_version: string;
-    deadline: string;
-  };
-  macos_settings: {
-    custom_settings: null;
-    enable_disk_encryption: boolean;
-  };
-  macos_migration: IMacOsMigrationSettings;
+interface ICustomSetting {
+  path: string;
+  labels_include_all?: string[];
+  labels_exclude_any?: string[];
 }
 
+export interface IAppleDeviceUpdates {
+  minimum_version: string;
+  deadline: string;
+}
+
+export interface IMdmConfig {
+  /** Update this URL if you're self-hosting Fleet and you want your hosts to talk to a different URL for MDM features. (If not configured, hosts will use the base URL of the Fleet instance.) */
+  apple_server_url: string;
+  enable_disk_encryption: boolean;
+  /** `enabled_and_configured` only tells us if Apples MDM has been enabled and
+  configured correctly. The naming is slightly confusing but at one point we
+  only supported apple mdm, so thats why it's name the way it is. */
+  enabled_and_configured: boolean;
+  apple_bm_default_team?: string;
+  /**
+   * @deprecated
+   * Refer to needsAbmTermsRenewal from AppContext instead of config.apple_bm_terms_expired.
+   * https://github.com/fleetdm/fleet/pull/21043/files#r1705977965
+   */
+  apple_bm_terms_expired: boolean;
+  apple_bm_enabled_and_configured: boolean;
+  windows_enabled_and_configured: boolean;
+  windows_migration_enabled: boolean;
+  android_enabled_and_configured: boolean;
+  end_user_authentication: IEndUserAuthentication;
+  macos_updates: IAppleDeviceUpdates;
+  ios_updates: IAppleDeviceUpdates;
+  ipados_updates: IAppleDeviceUpdates;
+  macos_settings: {
+    custom_settings: null | ICustomSetting[];
+    enable_disk_encryption: boolean;
+  };
+  macos_setup: {
+    bootstrap_package: string | null;
+    enable_end_user_authentication: boolean;
+    macos_setup_assistant: string | null;
+    enable_release_device_manually: boolean | null;
+  };
+  macos_migration: IMacOsMigrationSettings;
+  windows_updates: {
+    deadline_days: number | null;
+    grace_period_days: number | null;
+  };
+}
+
+// Note: IDeviceGlobalConfig is misnamed on the backend because in some cases it returns team config
+// values if the device is assigned to a team, e.g., features.enable_software_inventory reflects the
+// team config, if applicable, rather than the global config.
 export interface IDeviceGlobalConfig {
   mdm: Pick<IMdmConfig, "enabled_and_configured">;
+  features: Pick<IConfigFeatures, "enable_software_inventory">;
 }
 
 export interface IFleetDesktopSettings {
   transparency_url: string;
-}
-
-export interface IConfigFormData {
-  smtpAuthenticationMethod: string;
-  smtpAuthenticationType: string;
-  domain: string;
-  smtpEnableSslTls: boolean;
-  enableStartTls: boolean;
-  serverUrl: string;
-  orgLogoUrl: string;
-  orgName: string;
-  smtpPassword: string;
-  smtpPort?: number;
-  smtpSenderAddress: string;
-  smtpServer: string;
-  smtpUsername: string;
-  verifySslCerts: boolean;
-  entityId: string;
-  idpImageUrl: string;
-  metadata: string;
-  metadataUrl: string;
-  idpName: string;
-  enableSso: boolean;
-  enableSsoIdpLogin: boolean;
-  enableSmtp: boolean;
-  enableHostExpiry: boolean;
-  hostExpiryWindow: number;
-  disableLiveQuery: boolean;
-  agentOptions: any;
-  enableHostStatusWebhook: boolean;
-  hostStatusWebhookDestinationUrl?: string;
-  hostStatusWebhookHostPercentage?: number;
-  hostStatusWebhookDaysCount?: number;
-  enableUsageStatistics: boolean;
-  transparencyUrl: string;
 }
 
 export interface IConfigFeatures {
@@ -174,20 +97,29 @@ export interface IConfigFeatures {
   enable_software_inventory: boolean;
 }
 
+export interface IConfigServerSettings {
+  server_url: string;
+  live_query_disabled: boolean;
+  enable_analytics: boolean;
+  deferred_save_host: boolean;
+  query_reports_disabled: boolean;
+  scripts_disabled: boolean;
+  ai_features_disabled: boolean;
+}
+
 export interface IConfig {
+  android_enabled: boolean; // TODO: feature flag, remove when feature releases.
   org_info: {
     org_name: string;
     org_logo_url: string;
+    org_logo_url_light_background: string;
+    contact_url: string;
   };
   sandbox_enabled: boolean;
-  server_settings: {
-    server_url: string;
-    live_query_disabled: boolean;
-    enable_analytics: boolean;
-  };
-  smtp_settings: {
+  server_settings: IConfigServerSettings;
+  smtp_settings?: {
     enable_smtp: boolean;
-    configured: boolean;
+    configured?: boolean;
     sender_address: string;
     server: string;
     port?: number;
@@ -202,6 +134,7 @@ export interface IConfig {
   };
   sso_settings: {
     entity_id: string;
+    issuer_uri: string;
     idp_image_url: string;
     metadata: string;
     metadata_url: string;
@@ -209,13 +142,18 @@ export interface IConfig {
     enable_sso: boolean;
     enable_sso_idp_login: boolean;
     enable_jit_provisioning: boolean;
+    enable_jit_role_sync: boolean;
   };
   host_expiry_settings: {
     host_expiry_enabled: boolean;
-    host_expiry_window: number;
+    host_expiry_window?: number;
+  };
+  activity_expiry_settings: {
+    activity_expiry_enabled: boolean;
+    activity_expiry_window?: number;
   };
   features: IConfigFeatures;
-  agent_options: string;
+  agent_options: unknown; // Can pass empty object
   update_interval: {
     osquery_detail: number;
     osquery_policy: number;
@@ -236,7 +174,7 @@ export interface IConfig {
   //   databases_path: string;
   // };
   webhook_settings: IWebhookSettings;
-  integrations: IIntegrations;
+  integrations: IGlobalIntegrations;
   logging: {
     debug: boolean;
     json: boolean;
@@ -258,6 +196,10 @@ export interface IConfig {
         enable_log_compression: boolean;
       };
     };
+    audit?: {
+      plugin: string;
+      config: any;
+    };
   };
   email?: {
     backend: string;
@@ -267,12 +209,14 @@ export interface IConfig {
     };
   };
   mdm: IMdmConfig;
+  gitops: IGitOpsModeConfig;
 }
 
 export interface IWebhookSettings {
   failing_policies_webhook: IWebhookFailingPolicies;
-  host_status_webhook: IWebhookHostStatus;
+  host_status_webhook: IWebhookHostStatus | null;
   vulnerabilities_webhook: IWebhookSoftwareVulnerabilities;
+  activities_webhook: IWebhookActivities;
 }
 
 export type IAutomationsConfig = Pick<
@@ -281,3 +225,11 @@ export type IAutomationsConfig = Pick<
 >;
 
 export const CONFIG_DEFAULT_RECENT_VULNERABILITY_MAX_AGE_IN_DAYS = 30;
+
+export interface IUserSettings {
+  hidden_host_columns: string[];
+}
+export interface IGitOpsModeConfig {
+  gitops_mode_enabled: boolean;
+  repository_url: string;
+}

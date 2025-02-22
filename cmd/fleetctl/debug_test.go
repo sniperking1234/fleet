@@ -8,9 +8,9 @@ import (
 	"encoding/pem"
 	"errors"
 	"fmt"
-	"io/ioutil"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"path/filepath"
 	"strings"
 	"sync/atomic"
@@ -44,7 +44,8 @@ oug6edBNpdhp8r2/4t6n3AouK0/zG2naAlmXV0JoFuEvy2bX0BbbbPg+v4WNZIsC
 )
 
 func TestDebugConnectionCommand(t *testing.T) {
-	t.Run("without certificate", func(t *testing.T) {
+	t.Run("without certificate, plain http server", func(t *testing.T) {
+		// Plain HTTP server
 		_, ds := runServerWithMockedDS(t)
 
 		ds.VerifyEnrollSecretFunc = func(ctx context.Context, secret string) (*fleet.EnrollSecret, error) {
@@ -99,7 +100,7 @@ func TestDebugConnectionCommand(t *testing.T) {
 		// get the invalid certificate (for example.com)
 		dir := t.TempDir()
 		certPath := filepath.Join(dir, "cert.pem")
-		require.NoError(t, ioutil.WriteFile(certPath, []byte(exampleDotComCertDotPem), 0o600))
+		require.NoError(t, os.WriteFile(certPath, []byte(exampleDotComCertDotPem), 0o600))
 
 		buf, err := runAppNoChecks([]string{"debug", "connection", "--fleet-certificate", certPath, srv.URL})
 		// 2 successes: resolve host, dial address
@@ -123,7 +124,7 @@ func rawCertToPemFile(t *testing.T, raw []byte) string {
 
 	dir := t.TempDir()
 	certPath := filepath.Join(dir, "cert.pem")
-	require.NoError(t, ioutil.WriteFile(certPath, buf.Bytes(), 0o600))
+	require.NoError(t, os.WriteFile(certPath, buf.Bytes(), 0o600))
 	return certPath
 }
 
@@ -148,7 +149,7 @@ func TestDebugCheckAPIEndpoint(t *testing.T) {
 		case res.code == 0:
 			panic(res.body)
 		case res.code < 0:
-			time.Sleep(timeout + time.Millisecond)
+			time.Sleep(timeout + timeout/10)
 			res.code = -res.code
 		}
 		w.WriteHeader(res.code)
@@ -162,7 +163,7 @@ func TestDebugCheckAPIEndpoint(t *testing.T) {
 	cli, base, err := rawHTTPClientFromConfig(Context{Address: srv.URL, TLSSkipVerify: true})
 	require.NoError(t, err)
 	for i, c := range cases {
-		atomic.StoreInt32(&callCount, int32(i))
+		atomic.StoreInt32(&callCount, int32(i)) //nolint:gosec // dismiss G115
 		t.Run(fmt.Sprint(c.code), func(t *testing.T) {
 			err := checkAPIEndpoint(context.Background(), timeout, base, cli)
 			if c.errContains == "" {

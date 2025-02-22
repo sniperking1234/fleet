@@ -1,5 +1,6 @@
 import PropTypes from "prop-types";
-import { IPlatformString } from "interfaces/platform";
+import { CommaSeparatedPlatformString } from "interfaces/platform";
+import { IScript } from "./script";
 
 // Legacy PropTypes used on host interface
 export default PropTypes.shape({
@@ -22,6 +23,10 @@ export interface IStoredPolicyResponse {
   policy: IPolicy;
 }
 
+export interface IPoliciesCountResponse {
+  count: number;
+}
+
 export interface IPolicy {
   id: number;
   name: string;
@@ -31,20 +36,28 @@ export interface IPolicy {
   author_name: string;
   author_email: string;
   resolution: string;
-  platform: IPlatformString;
-  team_id?: number;
+  platform: CommaSeparatedPlatformString;
+  team_id: number | null;
   created_at: string;
   updated_at: string;
   critical: boolean;
+  calendar_events_enabled: boolean;
+  install_software?: IPolicySoftwareToInstall;
+  run_script?: Pick<IScript, "id" | "name">;
+}
+export interface IPolicySoftwareToInstall {
+  name: string;
+  software_title_id: number;
 }
 
 // Used on the manage hosts page and other places where aggregate stats are displayed
 export interface IPolicyStats extends IPolicy {
   passing_host_count: number;
   failing_host_count: number;
+  host_count_updated_at: string;
   webhook: string;
   has_run: boolean;
-  osquery_policy_ms: number;
+  next_update_ms: number;
 }
 
 export interface IPolicyWebhookPreviewPayload {
@@ -61,28 +74,40 @@ export interface IPolicyWebhookPreviewPayload {
   critical?: boolean;
 }
 
+export type PolicyStatusResponse = "pass" | "fail" | "";
+
 // Used on the host details page and other places where the status of individual hosts are displayed
 export interface IHostPolicy extends IPolicy {
-  response: string;
+  response: PolicyStatusResponse;
 }
 
+// Policies API can return {}
 export interface ILoadAllPoliciesResponse {
-  policies: IPolicyStats[];
+  policies?: IPolicyStats[];
 }
 
+// Team policies API can return {}
 export interface ILoadTeamPoliciesResponse {
-  policies: IPolicyStats[];
-  inherited_policies: IPolicyStats[];
+  policies?: IPolicyStats[];
 }
+
+export interface ILoadTeamPolicyResponse {
+  policy: IPolicyStats;
+}
+
 export interface IPolicyFormData {
   description?: string | number | boolean | undefined;
   resolution?: string | number | boolean | undefined;
   critical?: boolean;
-  platform?: IPlatformString;
+  platform?: CommaSeparatedPlatformString;
   name?: string | number | boolean | undefined;
   query?: string | number | boolean | undefined;
-  team_id?: number;
+  team_id?: number | null;
   id?: number;
+  calendar_events_enabled?: boolean;
+  software_title_id?: number | null;
+  // null for PATCH to unset - note asymmetry with GET/LIST - see IPolicy.run_script
+  script_id?: number | null;
 }
 
 export interface IPolicyNew {
@@ -93,6 +118,6 @@ export interface IPolicyNew {
   query: string;
   resolution: string;
   critical: boolean;
-  platform: IPlatformString;
+  platform: CommaSeparatedPlatformString;
   mdm_required?: boolean;
 }

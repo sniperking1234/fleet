@@ -1,38 +1,48 @@
 import React from "react";
-import { Meta, Story } from "@storybook/react";
+import { Meta, StoryObj } from "@storybook/react";
 
 import TooltipWrapper from ".";
 
 import "../../index.scss";
 
-interface ITooltipWrapperProps {
-  children: string;
-  tipContent: string;
-}
-
-export default {
+const meta: Meta<typeof TooltipWrapper> = {
   component: TooltipWrapper,
   title: "Components/TooltipWrapper",
-  args: {
-    tipContent: "This is an example tooltip.",
-  },
   argTypes: {
     position: {
-      options: ["top", "bottom"],
+      options: [
+        "top",
+        "top-start",
+        "top-end",
+        "right",
+        "right-start",
+        "right-end",
+        "bottom",
+        "bottom-start",
+        "bottom-end",
+        "left",
+        "left-start",
+        "left-end",
+      ],
       control: "radio",
     },
   },
-} as Meta;
+};
 
-// using line breaks to create space for top position
-const Template: Story<ITooltipWrapperProps> = (props) => (
-  <>
-    <br />
-    <br />
-    <br />
-    <br />
-    <TooltipWrapper {...props}>Example text</TooltipWrapper>
-  </>
-);
+export default meta;
 
-export const Default = Template.bind({});
+type Story = StoryObj<typeof TooltipWrapper>;
+
+export const Default: Story = {
+  args: {
+    tipContent: "This is an example tooltip.",
+    children: "Example text",
+  },
+  decorators: [
+    (Story) => (
+      <div style={{ margin: "4rem 0" }}>
+        <Story />
+      </div>
+    ),
+  ],
+};

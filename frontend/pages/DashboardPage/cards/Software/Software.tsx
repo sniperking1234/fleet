@@ -1,31 +1,32 @@
-import React, { useContext, useMemo } from "react";
+import React, { useMemo } from "react";
 import { Tab, Tabs, TabList, TabPanel } from "react-tabs";
 import { Row } from "react-table";
-import { InjectedRouter } from "react-router";
 import PATHS from "router/paths";
+import { InjectedRouter } from "react-router";
 
-import { AppContext } from "context/app";
 import { buildQueryStringFromParams } from "utilities/url";
+import { ISoftwareResponse } from "interfaces/software";
 
+import { ITableQueryData } from "components/TableContainer/TableContainer";
 import TabsWrapper from "components/TabsWrapper";
 import TableContainer from "components/TableContainer";
 import TableDataError from "components/DataError";
 import Spinner from "components/Spinner";
-import EmptySoftwareTable from "pages/software/components/EmptySoftwareTable";
+import EmptySoftwareTable from "pages/SoftwarePage/components/EmptySoftwareTable";
 
 import generateTableHeaders from "./SoftwareTableConfig";
 
 interface ISoftwareCardProps {
   errorSoftware: Error | null;
-  isCollectingInventory: boolean;
   isSoftwareFetching: boolean;
   isSoftwareEnabled?: boolean;
-  software: any;
+  software?: ISoftwareResponse;
   teamId?: number;
-  pageIndex: number;
-  navTabIndex: any;
-  onTabChange: any;
-  onQueryChange: any;
+  navTabIndex: number;
+  onTabChange: (index: number, last: number, event: Event) => boolean | void;
+  onQueryChange?:
+    | ((queryData: ITableQueryData) => void)
+    | ((queryData: ITableQueryData) => number);
   router: InjectedRouter;
 }
 
@@ -43,7 +44,6 @@ const baseClass = "home-software";
 
 const Software = ({
   errorSoftware,
-  isCollectingInventory,
   isSoftwareFetching,
   isSoftwareEnabled,
   navTabIndex,
@@ -53,8 +53,6 @@ const Software = ({
   teamId,
   router,
 }: ISoftwareCardProps): JSX.Element => {
-  const { noSandboxHosts } = useContext(AppContext);
-
   const tableHeaders = useMemo(() => generateTableHeaders(teamId), [teamId]);
 
   const handleRowSelect = (row: IRowProps) => {
@@ -89,18 +87,13 @@ const Software = ({
                 <TableDataError />
               ) : (
                 <TableContainer
-                  columns={tableHeaders}
+                  columnConfigs={tableHeaders}
                   data={(isSoftwareEnabled && software?.software) || []}
                   isLoading={isSoftwareFetching}
                   defaultSortHeader={SOFTWARE_DEFAULT_SORT_DIRECTION}
                   defaultSortDirection={SOFTWARE_DEFAULT_SORT_DIRECTION}
-                  resultsTitle={"software"}
-                  emptyComponent={() => (
-                    <EmptySoftwareTable
-                      isCollectingSoftware={isCollectingInventory}
-                      noSandboxHosts={noSandboxHosts}
-                    />
-                  )}
+                  resultsTitle="software"
+                  emptyComponent={() => <EmptySoftwareTable />}
                   showMarkAllPages={false}
                   isAllPagesSelected={false}
                   disableCount
@@ -116,18 +109,14 @@ const Software = ({
                 <TableDataError />
               ) : (
                 <TableContainer
-                  columns={tableHeaders}
+                  columnConfigs={tableHeaders}
                   data={(isSoftwareEnabled && software?.software) || []}
                   isLoading={isSoftwareFetching}
                   defaultSortHeader={SOFTWARE_DEFAULT_SORT_HEADER}
                   defaultSortDirection={SOFTWARE_DEFAULT_SORT_DIRECTION}
-                  resultsTitle={"software"}
+                  resultsTitle="software"
                   emptyComponent={() => (
-                    <EmptySoftwareTable
-                      isCollectingSoftware={isCollectingInventory}
-                      noSandboxHosts={noSandboxHosts}
-                      isFilterVulnerable
-                    />
+                    <EmptySoftwareTable vulnFilters={{ vulnerable: true }} />
                   )}
                   showMarkAllPages={false}
                   isAllPagesSelected={false}

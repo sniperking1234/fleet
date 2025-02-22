@@ -2,17 +2,23 @@ import React, { useContext } from "react";
 import { Link } from "react-router";
 import classnames from "classnames";
 
-import { AppContext } from "context/app";
-import { IConfig } from "interfaces/config";
-import { APP_CONTEXT_ALL_TEAMS_ID } from "interfaces/team";
-import { IUser } from "interfaces/user";
 import { QueryParams } from "utilities/url";
+import { LEARN_MORE_ABOUT_BASE_LINK } from "utilities/constants";
+
+import { AppContext } from "context/app";
+
+import { IConfig } from "interfaces/config";
+import { API_ALL_TEAMS_ID, APP_CONTEXT_ALL_TEAMS_ID } from "interfaces/team";
+import { IUser } from "interfaces/user";
 
 import LinkWithContext from "components/LinkWithContext";
-import UserMenu from "components/top_nav/UserMenu";
 // @ts-ignore
 import OrgLogoIcon from "components/icons/OrgLogoIcon";
+import Icon from "components/Icon";
+import TooltipWrapper from "components/TooltipWrapper";
+import CustomLink from "components/CustomLink";
 
+import UserMenu from "../UserMenu";
 import getNavItems, { INavItem } from "./navItems";
 
 interface ISiteTopNavProps {
@@ -20,12 +26,10 @@ interface ISiteTopNavProps {
   currentUser: IUser;
   location: {
     pathname: string;
-    search: string;
-    hash?: string;
     query: QueryParams;
   };
   onLogoutUser: () => void;
-  onNavItemClick: (path: string) => void;
+  onUserMenuItemClick: (path: string) => void;
 }
 
 // TODO(sarah): Build RegExps for other routes that need to be differentiated in order to build
@@ -37,25 +41,21 @@ const REGEX_DETAIL_PAGES = {
   LABEL_NEW: /\/labels\/new/i,
   PACK_EDIT: /\/packs\/\d+/i,
   PACK_NEW: /\/packs\/new/i,
+  QUERIES_EDIT: /\/queries\/\d+/i,
+  QUERIES_NEW: /\/queries\/new/i,
   POLICY_EDIT: /\/policies\/\d+/i,
   POLICY_NEW: /\/policies\/new/i,
-  QUERY_EDIT: /\/queries\/\d+/i,
-  QUERY_NEW: /\/queries\/new/i,
-  SOFTWARE_DETAILS: /\/software\/\d+/i,
+  SOFTWARE_TITLES_DETAILS: /\/software\/titles\/\d+/i,
+  SOFTWARE_VERSIONS_DETAILS: /\/software\/versions\/\d+/i,
 };
 
 const REGEX_GLOBAL_PAGES = {
-  MANAGE_QUERIES: /\/queries\/manage/i,
   MANAGE_PACKS: /\/packs\/manage/i,
   ORGANIZATION: /\/settings\/organization/i,
   USERS: /\/settings\/users/i,
   INTEGRATIONS: /\/settings\/integrations/i,
   TEAMS: /\/settings\/teams$/i, // Note: we want this to only match if it is the end of the path
   PROFILE: /\/profile/i,
-};
-
-const REGEX_EXCLUDE_NO_TEAM_PAGES = {
-  MANAGE_POLICIES: /\/policies\/manage/i,
 };
 
 const testDetailPage = (path: string, re: RegExp) => {
@@ -76,18 +76,41 @@ const isGlobalPage = (path: string) => {
   return Object.values(REGEX_GLOBAL_PAGES).some((re) => path.match(re));
 };
 
-const isExcludeNoTeamPage = (path: string) => {
-  return Object.values(REGEX_EXCLUDE_NO_TEAM_PAGES).some((re) =>
-    path.match(re)
+const GitOpsModeIndicator = () => {
+  const baseClass = "gitops-mode-indicator";
+  const tipContent = (
+    <>
+      Items managed in YAML are read-only.
+      <br />
+      <CustomLink
+        newTab
+        text="Learn more"
+        variant="tooltip-link"
+        url={`${LEARN_MORE_ABOUT_BASE_LINK}/ui-gitops-mode`}
+      />
+    </>
+  );
+  return (
+    <TooltipWrapper
+      position="bottom"
+      underline={false}
+      showArrow
+      tipContent={tipContent}
+      className={baseClass}
+      tipOffset={2}
+    >
+      <Icon name="gitops-mode" />
+      <div className={`${baseClass}__text`}>GitOps mode</div>
+    </TooltipWrapper>
   );
 };
 
 const SiteTopNav = ({
   config,
   currentUser,
-  location: { pathname: currentPath, search, hash = "", query },
+  location: { pathname: currentPath, query },
   onLogoutUser,
-  onNavItemClick,
+  onUserMenuItemClick,
 }: ISiteTopNavProps): JSX.Element => {
   const {
     currentTeam,
@@ -96,24 +119,19 @@ const SiteTopNav = ({
     isGlobalMaintainer,
     isAnyTeamMaintainer,
     isNoAccess,
-    isMdmEnabledAndConfigured, // TODO: confirm
-    isSandboxMode,
   } = useContext(AppContext);
 
   const isActiveDetailPage = isDetailPage(currentPath);
   const isActiveGlobalPage = isGlobalPage(currentPath);
 
   const currentQueryParams = { ...query };
-  if (
-    isActiveGlobalPage ||
-    (isActiveDetailPage && !currentPath.match(REGEX_DETAIL_PAGES.POLICY_EDIT))
-  ) {
-    // detail pages (e.g., host details) and some manage pages (e.g., queries) don't have team_id
-    // query params that we can simply append to the top nav links so instead we need grab the team
-    // id from context (note that policy edit page does support team_id param so we exclude that one)
+  if (isActiveGlobalPage || isActiveDetailPage) {
+    // detail pages (e.g., host details) and some manage pages (e.g., queries) aren't guaranteed to
+    // have a team_id in the URL that we can simply append to the top nav links so instead we need grab the team
+    // id from context
     currentQueryParams.team_id =
       currentTeam?.id === APP_CONTEXT_ALL_TEAMS_ID
-        ? undefined
+        ? API_ALL_TEAMS_ID
         : currentTeam?.id;
   }
 
@@ -146,33 +164,33 @@ const SiteTopNav = ({
     }
 
     if (active && !isActiveDetailPage) {
-      // TODO: confirm link should be noop and find best pattern (one that doesn't dispatch a
+      const path = navItem.alwaysToPathname
+        ? navItem.location.pathname
+        : currentPath;
+
+      const includeTeamId = (activePath: string) => {
+        if (currentQueryParams.team_id !== API_ALL_TEAMS_ID) {
+          return `${path}?team_id=${currentQueryParams.team_id}`;
+        }
+        return activePath;
+      };
+
+      // Clicking an active link returns user to default page
+      // Resetting all filters except team ID
+      // TODO: Find best pattern(one that doesn't dispatch a
       // replace to the same url, which triggers a re-render)
       return (
         <li className={navItemClasses} key={`nav-item-${name}`}>
-          <Link
-            className={`${navItemBaseClass}__link`}
-            to={currentPath.concat(search).concat(hash)}
-          >
+          <a className={`${navItemBaseClass}__link`} href={includeTeamId(path)}>
             <span
               className={`${navItemBaseClass}__name`}
               data-text={navItem.name}
             >
               {name}
             </span>
-          </Link>
-          {/* <div className={`${navItemBaseClass}__link`}>
-            <span className={`${navItemBaseClass}__name`}>{name}</span>
-          </div> */}
+          </a>
         </li>
       );
-    }
-
-    if (
-      isExcludeNoTeamPage(navItem.location.pathname) &&
-      (currentQueryParams.team_id === "0" || currentQueryParams.team_id === 0)
-    ) {
-      currentQueryParams.team_id = undefined;
     }
 
     return (
@@ -181,7 +199,7 @@ const SiteTopNav = ({
           <LinkWithContext
             className={`${navItemBaseClass}__link`}
             withParams={withParams}
-            currentQueryParams={currentQueryParams}
+            currentQueryParams={{ team_id: currentQueryParams.team_id }}
             to={navItem.location.pathname}
           >
             <span
@@ -214,26 +232,27 @@ const SiteTopNav = ({
     isAnyTeamAdmin,
     isAnyTeamMaintainer,
     isGlobalMaintainer,
-    isNoAccess,
-    isSandboxMode
+    isNoAccess
   );
 
   const renderNavItems = () => {
     return (
       <div className="site-nav-content">
-        <ul className="site-nav-list">
+        <ul className="site-nav-left">
           {userNavItems.map((navItem) => {
             return renderNavItem(navItem);
           })}
         </ul>
-        <UserMenu
-          onLogout={onLogoutUser}
-          onNavItemClick={onNavItemClick}
-          currentUser={currentUser}
-          isAnyTeamAdmin={isAnyTeamAdmin}
-          isGlobalAdmin={isGlobalAdmin}
-          isSandboxMode={isSandboxMode}
-        />
+        <div className="site-nav-right">
+          {config.gitops.gitops_mode_enabled && <GitOpsModeIndicator />}
+          <UserMenu
+            onLogout={onLogoutUser}
+            onUserMenuItemClick={onUserMenuItemClick}
+            currentUser={currentUser}
+            isAnyTeamAdmin={isAnyTeamAdmin}
+            isGlobalAdmin={isGlobalAdmin}
+          />
+        </div>
       </div>
     );
   };

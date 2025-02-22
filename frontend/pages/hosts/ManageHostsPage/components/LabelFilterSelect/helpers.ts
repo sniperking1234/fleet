@@ -1,4 +1,6 @@
 import { ILabel } from "interfaces/label";
+import { getCustomLabels } from "services/entities/labels";
+
 import { EMPTY_OPTION, FILTERED_LINUX, NO_LABELS_OPTION } from "./constants";
 
 export interface IEmptyOption {
@@ -27,14 +29,15 @@ const createOptionGroup = (
 /** Will create the custom label group options and handles when no labels have been created yet or
  * will filter by the desired search query */
 const createCustomLabelOptions = (labels: ILabel[], query: string) => {
-  const customLabels = labels.filter((label) => label.label_type === "regular");
+  const customLabels = getCustomLabels(labels);
 
   let customLabelGroupOptions: ILabel[] | IEmptyOption[];
   if (customLabels.length === 0) {
     customLabelGroupOptions = [NO_LABELS_OPTION];
   } else {
     const matchingLabels = customLabels.filter((label) =>
-      label.display_text.toLowerCase().includes(query)
+      // case-insensitive matching
+      label.display_text.toLowerCase().includes(query.toLowerCase())
     );
     customLabelGroupOptions =
       matchingLabels.length !== 0 ? matchingLabels : [EMPTY_OPTION];

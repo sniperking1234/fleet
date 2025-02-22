@@ -7,7 +7,6 @@ import (
 	"crypto/x509"
 	"errors"
 	"fmt"
-	"io/ioutil"
 	"net"
 	"net/url"
 	"os"
@@ -20,7 +19,7 @@ import (
 func LoadPEM(path string) (*x509.CertPool, error) {
 	pool := x509.NewCertPool()
 
-	contents, err := ioutil.ReadFile(path)
+	contents, err := os.ReadFile(path)
 	if err != nil {
 		return nil, fmt.Errorf("read certificate file: %w", err)
 	}
@@ -58,9 +57,15 @@ func ValidateConnectionContext(ctx context.Context, pool *x509.CertPool, targetU
 				}
 
 				cert := state.PeerCertificates[0]
+				intermediates := x509.NewCertPool()
+				for _, intermediate := range state.PeerCertificates[1:] {
+					intermediates.AddCert(intermediate)
+				}
+
 				if _, err := cert.Verify(x509.VerifyOptions{
-					DNSName: parsed.Hostname(),
-					Roots:   pool,
+					DNSName:       parsed.Hostname(),
+					Roots:         pool,
+					Intermediates: intermediates,
 				}); err != nil {
 					return ctxerr.Wrap(ctx, err, "verify certificate")
 				}

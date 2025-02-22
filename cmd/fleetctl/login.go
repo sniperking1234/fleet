@@ -23,7 +23,7 @@ fleetctl login [options]
 
 Interactively prompts for email and password if not specified in the flags or environment variables.
 
-Trying to login with SSO? First, login to the Fleet UI and retrieve your API token from the "My account" page. Then set your API token with the fleetctl config set --token <your-api-token-here> command. You're now logged in to fleetctl.
+Trying to login with SSO or MFA? First, login to the Fleet UI and retrieve your API token from the "My account" page. Then set your API token with the fleetctl config set --token <your-api-token-here> command. You're now logged in to fleetctl.
 `,
 		Flags: []cli.Flag{
 			&cli.StringFlag{
@@ -50,6 +50,16 @@ Trying to login with SSO? First, login to the Fleet UI and retrieve your API tok
 				return err
 			}
 
+			definedAsEnvOnly := func(flagName, envName string) bool {
+				cliArgPresent := false
+				for _, arg := range os.Args {
+					if arg == flagName {
+						cliArgPresent = true
+					}
+				}
+				return os.Getenv(envName) != "" && !cliArgPresent
+			}
+
 			// Allow interactive entry to discourage passwords in
 			// CLI history.
 			if flEmail == "" {
@@ -59,6 +69,8 @@ Trying to login with SSO? First, login to the Fleet UI and retrieve your API tok
 				if err != nil {
 					return fmt.Errorf("error reading email: %w", err)
 				}
+			} else if definedAsEnvOnly("--email", "EMAIL") {
+				fmt.Printf("Using value of environment variable $EMAIL as email.\n")
 			}
 			if flPassword == "" {
 				fmt.Print("Password: ")
@@ -68,12 +80,14 @@ Trying to login with SSO? First, login to the Fleet UI and retrieve your API tok
 				}
 				fmt.Println()
 				flPassword = string(passBytes)
+			} else if definedAsEnvOnly("--password", "PASSWORD") {
+				fmt.Printf("Using value of environment variable $PASSWORD as password.\n")
 			}
 
 			token, err := fleet.Login(flEmail, flPassword)
 			if err != nil {
 				root := ctxerr.Cause(err)
-				switch root.(type) {
+				switch root.(type) { //nolint:gocritic // ignore singleCaseSwitch
 				case service.NotSetupErr:
 					return err
 				}

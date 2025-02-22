@@ -1,5 +1,5 @@
 #basic-handbook {
-  padding: 0px 40px;
+
   a {
     color: @core-vibrant-blue;
   }
@@ -10,55 +10,113 @@
       padding-bottom: 8px;
     }
   }
+  [purpose='handbook-template'] {
+    padding: 0px 40px;
+  }
 
   [purpose='search'] {
-    padding-bottom: 16px;
-    input {
-      padding-top: 6px;
-      padding-bottom: 6px;
-      border: none;
-      } &::placeholder {
-        font-size: 16px;
-        line-height: 24px;
-      }
-    .input-group {
+    // Note: We're using classes here to override the default Docsearch styles;
+    button {
+      width: 100%;
+      cursor: text;
+      margin: 0;
+    }
+    .DocSearch-Button {
       border-top-left-radius: 6px;
       border-bottom-left-radius: 6px;
       border-top-right-radius: 6px;
       border-bottom-right-radius: 6px;
       border: 1px solid @core-fleet-black-25;
+      background-color: #FFF;
+      padding: 6px;
+      height: 36px;
+      margin: 0;
+    }
+    .DocSearch-Button:hover {
+      box-shadow: none;
+      border: 1px solid @core-fleet-black-25;
+      color: @core-fleet-black-50;
+    }
+    .DocSearch-Search-Icon {
+      margin-left: 10px;
+      height: 16px;
+      width: 16px;
+      color: @core-fleet-black-50;
+      stroke-width: 3px;
+    }
+    .DocSearch-Button-Keys {
+      display: none;
     }
     .input-group:focus-within {
       border: 1px solid @core-vibrant-blue;
     }
-    .docsearch-input {
-      height: 100%;
-      width: 98%;
-    }
-    .docsearch-input:focus-visible {
-      outline: none;
-    }
-    .ds-input:focus {
-      outline: rgba(0, 0, 0, 0);
-    }
-    .input-group-text {
-      color: @core-fleet-black-50;
-    }
-    .form-control {
-      height: 36px;
-      padding: 0px;
+    .DocSearch-Button-Placeholder {
       font-size: 16px;
-    } &:focus {
-      border: none;
+      font-weight: 400;
+      padding-left: 12px;
+    }
+    .DocSearch-Button-Placeholder::after {
+      content: ' the handbook...';
+    }
+    [purpose='disabled-search'] {
+      input {
+        padding-top: 6px;
+        padding-bottom: 6px;
+        border: none;
+        } &::placeholder {
+          font-size: 16px;
+          line-height: 24px;
+        }
+      .input-group {
+        border-top-left-radius: 6px;
+        border-bottom-left-radius: 6px;
+        border-top-right-radius: 6px;
+        border-bottom-right-radius: 6px;
+        border: 1px solid @core-fleet-black-25;
+        background: #FFF;
+      }
+      .input-group:focus-within {
+        border: 1px solid @core-vibrant-blue;
+      }
+      .docsearch-input {
+        height: 100%;
+        width: 98%;
+      }
+      .docsearch-input:focus-visible {
+        outline: none;
+      }
+      .ds-input:focus {
+        outline: rgba(0, 0, 0, 0);
+      }
+      .input-group-text {
+        color: @core-fleet-black-50;
+      }
+      .form-control {
+        height: 36px;
+        padding: 0px;
+        font-size: 16px;
+      } &:focus {
+        border: none;
+      }
     }
   }
 
   [purpose='breadcrumbs'] {
+    [purpose='page-breadcrumbs'] {
+      max-width: 100%;
+      overflow: hidden;
+    }
+
     padding-bottom: 16px;
     padding-top: 16px;
     p, a, strong {
       font-size: 12px;
-      line-height: 24px;
+      line-height: 18px;
+    }
+    [purpose='current-page-breadcrumb'] {
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
     }
     a {
       text-decoration: none;
@@ -122,6 +180,37 @@
         margin-left: -2px;
       }
     }
+    [purpose='sidebar-cta'] {
+      margin-top: 24px;
+      display: flex;
+      width: 200px;
+      padding: 16px;
+      align-items: center;
+      border-radius: 8px;
+      border: 1px solid #E2E4EA;
+      background: #FFF;
+      font-size: 14px;
+      line-height: 150%;
+      color: @core-fleet-black;
+      p {
+        line-height: 120%;
+        margin-bottom: 0px;
+        font-weight: 800;
+      }
+      [parasails-component='animated-arrow-button'] {
+        line-height: 150%;
+      }
+      img {
+        width: 20px;
+        height: 18.947px;
+        margin-right: 10px;
+      }
+      &:hover {
+        box-shadow: 0px 0px 0px 3px rgba(0, 0, 0, 0.03);
+        text-decoration: none;
+      }
+    }
+
   }
   [purpose='🫧 Marketing'] {
     h2 {
@@ -203,9 +292,45 @@
       }
     }
     ol {
-      padding-left: 16px;
-      li {
-        padding-bottom: 16px;
+      counter-reset: custom-counter;
+      list-style-type: none;
+      padding-inline-start: 0px;
+      padding: 0;
+      margin-top: 16px;
+      margin-bottom: 20px;
+      ul > li {
+        text-indent: 0px;
+        margin-left: 0px;
+      }
+      > li {
+        counter-increment: custom-counter;
+        margin-left: 36px;
+        text-indent: -36px;
+        padding-left: 0px;
+        margin-bottom: 16px;
+        code:not(.nohighlight):not(.mermaid) {
+          display: inline;
+        }
+        p {
+          display: inline;
+          margin-bottom: 0px;
+        }
+        blockquote {
+          text-indent: 0px;
+        }
+      }
+      > li::before {
+        content: counter(custom-counter);
+        background-color: #E2E4EA;
+        width: 24px;
+        font-size: 13px;
+        display: inline-block;
+        border-radius: 50%;
+        margin-right: 10px;
+        padding: 2px 4px;
+        text-align: center;
+        line-height: 20px;
+        text-indent: 0px;
       }
     }
     img {
@@ -238,6 +363,10 @@
       margin-bottom: 16px 0px 32px;
       font-family: @code-font;
       display: inline-block;
+      svg {
+        max-width: 100%;
+        max-height: 600px;
+      }
     }
     pre:not(.algolia-autocomplete):not(.ds-dropdown-menu) {
       padding: 24px;
@@ -287,15 +416,15 @@
       font-size: 16px;
     }
     [purpose='large-quote']::before, [purpose='quote']::before {
-      font-family: 'Nunito Sans';
-      display: inline;
-      position: absolute;
-      content: '“';
+      content: ' ';
+      background-image: url('/images/icon-quote-mark-22x18@2x.png');
+      background-size: 22px 18px;
+      display: block;
+      position: relative;
       top: 16px;
       left: -32px;
-      font-size: 64px;
-      padding-right: 8px;
-      color: @core-vibrant-blue;
+      width: 22px;
+      height: 18px;
     }
     [purpose='tip'] {
       margin: 16px 0 32px;
@@ -382,6 +511,40 @@
     }
   }
 
+  // For deloitte quote on open poisiton pages.
+
+  [purpose='open-position-quote-card'] {
+    margin-top: 36px;
+    padding: 40px 60px;
+    border-radius: 16px;
+    background-color: #FFF;
+    border: 1px solid @core-vibrant-blue-15;
+    box-shadow: 0px 4px 16px 0px rgba(0, 0, 0, 0.10);
+    display: flex;
+    flex-direction: row;
+    justify-content: center;
+    align-items: center;
+    img {
+      height: 36px;
+      width: auto;
+      padding: 0;
+      margin-right: 40px;
+    }
+    [purpose='quote-text'] {
+      font-size: 18px;
+      line-height: 27px;
+    }
+    [purpose='quote-attribution'] {
+      p {
+        font-size: 14px;
+        line-height: 21px;
+        margin-bottom: 0px;
+      }
+    }
+  }
+
+
+
   @media (min-width: 1199px) {
 
     [purpose='right-sidebar'] {
@@ -398,7 +561,7 @@
     }
   }
 
-  // for larger screens (>900px)
+  // for larger screens (>1200px)
   @media (max-width: 1199px) {
 
     [purpose='content'] {
@@ -410,8 +573,55 @@
     }
   }
 
+  // only on larger screens (>900px)
+  @media (min-width: 992px) {
+
+    [purpose='back-to-top-button-container'] {
+      position: sticky;
+      bottom: 107px;
+      overflow-x: hidden;
+      pointer-events: none;
+    }
+    [purpose='back-to-top-button'] {
+      display: inline-block;
+      position: relative;
+      left: calc(~'100% - 103px');
+      width: 104px;
+      background: #FFFFFF;
+      padding: 8px 12px;
+      transition: transform 0.5s;
+      transform: translateX(104px);
+      cursor: pointer;
+      border: 1px solid #E2E4EA;
+      border-radius: 16px 0px 0px 16px;
+      pointer-events: auto;
+      p {
+        color: #515774;
+        font-size: 11px;
+        font-weight: 700;
+        line-height: 16px;
+      }
+      img {
+        height: 12px;
+        margin-right: 6px;
+      }
+    }
+    [purpose='back-to-top-button'].show {
+      display: inline-block;
+      transition: transform 0.5s;
+      transform: translateX(0);
+    }
+    [purpose='back-to-top-button'].show:hover {
+      background: #F9FAFC;
+    }
+
+  }
+
   // for smaller screens (>768px)
   @media (max-width: 991px) {
+    [purpose='back-to-top-button-container'] {
+      display: none;
+    }
     [purpose='content'] {
       max-width: 100%;
     }
@@ -435,6 +645,16 @@
 
   // for even smaller screens (>576px)
   @media (max-width: 767px) {
+    [purpose='open-position-quote-card'] {
+      flex-direction: column;
+      justify-content: flex-start;
+      align-items: start;
+      padding: 75px 40px;
+      img {
+        margin-right: 0px;
+        margin-bottom: 40px;
+      }
+    }
     [purpose='search'] {
       padding-bottom: 0px;
     }
@@ -446,7 +666,15 @@
 
   // for mobile screens (< 576px)
   @media (max-width: 576px) {
-    padding: 0px 24px;
+    [purpose='handbook-template'] {
+      padding: 0px 24px;
+    }
+    [purpose='content'] {
+      h1 {
+        font-size: 28px;
+        line-height: 120%;
+      }
+    }
   }
 
 

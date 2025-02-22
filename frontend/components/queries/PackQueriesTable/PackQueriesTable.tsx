@@ -7,11 +7,11 @@ import TableContainer from "components/TableContainer";
 import { ITableQueryData } from "components/TableContainer/TableContainer";
 import Button from "components/buttons/Button";
 import EmptyTable from "components/EmptyTable";
+import Icon from "components/Icon/Icon";
 import {
   generateTableHeaders,
   generateDataSet,
 } from "./PackQueriesTable/PackQueriesTableConfig";
-import AddQueryIcon from "../../../../assets/images/icon-plus-16x16@2x.png";
 
 const baseClass = "pack-queries-table";
 
@@ -72,20 +72,20 @@ const PackQueriesTable = ({
   const tableData = generateDataSet(getQueries());
 
   return (
-    <div className={`${baseClass} body-wrap`}>
+    <div className={`${baseClass}`}>
       {scheduledQueries?.length ? (
         <TableContainer
-          columns={tableHeaders}
+          columnConfigs={tableHeaders}
           data={tableData}
           isLoading={isLoadingPackQueries}
-          defaultSortHeader={"name"}
-          defaultSortDirection={"asc"}
-          inputPlaceHolder={"Search queries"}
+          defaultSortHeader="name"
+          defaultSortDirection="asc"
+          inputPlaceHolder="Search queries"
           onQueryChange={onTableQueryChange}
-          resultsTitle={"queries"}
+          resultsTitle="queries"
           emptyComponent={() =>
             EmptyTable({
-              header: "No queries match your search criteria.",
+              header: "No queries match your search criteria",
               info: "Try a different search.",
             })
           }
@@ -93,14 +93,14 @@ const PackQueriesTable = ({
           actionButton={{
             name: "add query",
             buttonText: "Add query",
-            icon: AddQueryIcon,
+            iconSvg: "plus",
             variant: "text-icon",
             onActionButtonClick: onAddPackQuery,
           }}
           primarySelectAction={{
             name: "remove query",
             buttonText: "Remove",
-            icon: "close",
+            iconSvg: "close",
             variant: "text-icon",
             onActionButtonClick: onRemovePackQueries,
           }}
@@ -113,12 +113,12 @@ const PackQueriesTable = ({
           <p>Your pack has no queries.</p>
           <Button
             onClick={onAddPackQuery}
-            variant={"text-icon"}
+            variant="text-icon"
             className={`${baseClass}__no-queries-action-button`}
           >
             <>
               Add query
-              <img src={AddQueryIcon} alt={`Add query icon`} />
+              <Icon name="plus" />
             </>
           </Button>
         </div>

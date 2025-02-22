@@ -3,14 +3,18 @@ package mysql
 import (
 	"context"
 	"fmt"
-	"sort"
 	"strconv"
+	"strings"
 	"testing"
 	"time"
 
+	"github.com/fleetdm/fleet/v4/pkg/optjson"
+	"github.com/fleetdm/fleet/v4/server/contexts/license"
 	"github.com/fleetdm/fleet/v4/server/fleet"
 	"github.com/fleetdm/fleet/v4/server/ptr"
 	"github.com/fleetdm/fleet/v4/server/test"
+	"github.com/google/go-cmp/cmp"
+	"github.com/google/uuid"
 	"github.com/jmoiron/sqlx"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -29,6 +33,27 @@ func TestBatchHostnamesLarge(t *testing.T) {
 		large = append(large, strconv.Itoa(i))
 	}
 	batched := batchHostnames(large)
+	require.Equal(t, 5, len(batched))
+	assert.Equal(t, large[:50000], batched[0])
+	assert.Equal(t, large[50000:100000], batched[1])
+	assert.Equal(t, large[100000:150000], batched[2])
+	assert.Equal(t, large[150000:200000], batched[3])
+	assert.Equal(t, large[200000:230000], batched[4])
+}
+
+func TestBatchHostIdsSmall(t *testing.T) {
+	small := []uint{1, 2, 3}
+	batched := batchHostIds(small)
+	require.Equal(t, 1, len(batched))
+	assert.Equal(t, small, batched[0])
+}
+
+func TestBatchHostIdsLarge(t *testing.T) {
+	large := []uint{}
+	for i := 0; i < 230000; i++ {
+		large = append(large, uint(i)) //nolint:gosec // dismiss G115
+	}
+	batched := batchHostIds(large)
 	require.Equal(t, 5, len(batched))
 	assert.Equal(t, large[:50000], batched[0])
 	assert.Equal(t, large[50000:100000], batched[1])
@@ -56,15 +81,22 @@ func TestLabels(t *testing.T) {
 		{"ChangeDetails", testLabelsChangeDetails},
 		{"GetSpec", testLabelsGetSpec},
 		{"ApplySpecsRoundtrip", testLabelsApplySpecsRoundtrip},
+		{"UpdateLabelMembershipByHostIDs", testUpdateLabelMembershipByHostIDs},
 		{"IDsByName", testLabelsIDsByName},
+		{"ByName", testLabelsByName},
 		{"Save", testLabelsSave},
 		{"QueriesForCentOSHost", testLabelsQueriesForCentOSHost},
 		{"RecordNonExistentQueryLabelExecution", testLabelsRecordNonexistentQueryLabelExecution},
 		{"DeleteLabel", testDeleteLabel},
 		{"LabelsSummary", testLabelsSummary},
-		{"ListHostsInLabelFailingPolicies", testListHostsInLabelFailingPolicies},
+		{"ListHostsInLabelIssues", testListHostsInLabelIssues},
 		{"ListHostsInLabelDiskEncryptionStatus", testListHostsInLabelDiskEncryptionStatus},
+		{"HostMemberOfAllLabels", testHostMemberOfAllLabels},
+		{"ListHostsInLabelOSSettings", testLabelsListHostsInLabelOSSettings},
+		{"AddDeleteLabelsToFromHost", testAddDeleteLabelsToFromHost},
 	}
+	// call TruncateTables first to remove migration-created labels
+	TruncateTables(t, ds)
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
 			defer TruncateTables(t, ds)
@@ -88,15 +120,13 @@ func testLabelsAddAllHosts(deferred bool, t *testing.T, db *Datastore) {
 	err = db.UpdateHost(context.Background(), host)
 	require.NoError(t, err)
 
-	// No labels to check
 	queries, err := db.LabelQueriesForHost(context.Background(), host)
 	assert.Nil(t, err)
 	assert.Len(t, queries, 0)
 
-	// Only 'All Hosts' label should be returned
 	labels, err := db.ListLabelsForHost(context.Background(), host.ID)
 	assert.Nil(t, err)
-	assert.Len(t, labels, 1)
+	assert.Len(t, labels, 1) // all hosts only
 
 	newLabels := []*fleet.LabelSpec{
 		// Note these are intentionally out of order
@@ -211,13 +241,13 @@ func testLabelsSearch(t *testing.T, db *Datastore) {
 	err := db.ApplyLabelSpecs(context.Background(), specs)
 	require.Nil(t, err)
 
-	all, err := db.Label(context.Background(), specs[len(specs)-1].ID)
-	require.Nil(t, err)
-	l3, err := db.Label(context.Background(), specs[2].ID)
-	require.Nil(t, err)
-
 	user := &fleet.User{GlobalRole: ptr.String(fleet.RoleAdmin)}
 	filter := fleet.TeamFilter{User: user}
+
+	all, _, err := db.Label(context.Background(), specs[len(specs)-1].ID, filter)
+	require.Nil(t, err)
+	l3, _, err := db.Label(context.Background(), specs[2].ID, filter)
+	require.Nil(t, err)
 
 	// We once threw errors when the search query was empty. Verify that we
 	// don't error.
@@ -252,6 +282,7 @@ func testLabelsListHostsInLabel(t *testing.T, db *Datastore) {
 		NodeKey:         ptr.String("1"),
 		UUID:            "1",
 		Hostname:        "foo.local",
+		Platform:        "darwin",
 	})
 	require.Nil(t, err)
 
@@ -264,6 +295,7 @@ func testLabelsListHostsInLabel(t *testing.T, db *Datastore) {
 		NodeKey:         ptr.String("2"),
 		UUID:            "2",
 		Hostname:        "bar.local",
+		Platform:        "darwin",
 	})
 	require.Nil(t, err)
 
@@ -276,19 +308,20 @@ func testLabelsListHostsInLabel(t *testing.T, db *Datastore) {
 		NodeKey:         ptr.String("3"),
 		UUID:            "3",
 		Hostname:        "baz.local",
+		Platform:        "darwin",
 	})
 	require.Nil(t, err)
-	require.NoError(t, db.SetOrUpdateHostDisksSpace(context.Background(), h1.ID, 10, 5))
-	require.NoError(t, db.SetOrUpdateHostDisksSpace(context.Background(), h2.ID, 20, 10))
-	require.NoError(t, db.SetOrUpdateHostDisksSpace(context.Background(), h3.ID, 30, 15))
+	require.NoError(t, db.SetOrUpdateHostDisksSpace(context.Background(), h1.ID, 10, 5, 200.0))
+	require.NoError(t, db.SetOrUpdateHostDisksSpace(context.Background(), h2.ID, 20, 10, 200.1))
+	require.NoError(t, db.SetOrUpdateHostDisksSpace(context.Background(), h3.ID, 30, 15, 200.2))
 
 	ctx := context.Background()
 	const simpleMDM, kandji = "https://simplemdm.com", "https://kandji.io"
-	err = db.SetOrUpdateMDMData(ctx, h1.ID, false, true, simpleMDM, true, fleet.WellKnownMDMSimpleMDM) // enrollment: automatic
+	err = db.SetOrUpdateMDMData(ctx, h1.ID, false, true, simpleMDM, true, fleet.WellKnownMDMSimpleMDM, "") // enrollment: automatic
 	require.NoError(t, err)
-	err = db.SetOrUpdateMDMData(ctx, h2.ID, false, true, kandji, true, fleet.WellKnownMDMKandji) // enrollment: automatic
+	err = db.SetOrUpdateMDMData(ctx, h2.ID, false, true, kandji, true, fleet.WellKnownMDMKandji, "") // enrollment: automatic
 	require.NoError(t, err)
-	err = db.SetOrUpdateMDMData(ctx, h3.ID, false, false, simpleMDM, false, fleet.WellKnownMDMSimpleMDM) // enrollment: unenrolled
+	err = db.SetOrUpdateMDMData(ctx, h3.ID, false, false, simpleMDM, false, fleet.WellKnownMDMSimpleMDM, "") // enrollment: unenrolled
 	require.NoError(t, err)
 
 	var simpleMDMID uint
@@ -318,6 +351,10 @@ func testLabelsListHostsInLabel(t *testing.T, db *Datastore) {
 	}
 
 	listHostsInLabelCheckCount(t, db, filter, l1.ID, fleet.HostListOptions{}, 3)
+
+	hosts := listHostsInLabelCheckCount(t, db, filter, l1.ID, fleet.HostListOptions{LowDiskSpaceFilter: ptr.Int(35), ListOptions: fleet.ListOptions{OrderKey: "id", After: "1"}}, 2)
+	require.Equal(t, h2.ID, hosts[0].ID)
+	require.Equal(t, h3.ID, hosts[1].ID)
 
 	listHostsInLabelCheckCount(t, db, filter, l1.ID, fleet.HostListOptions{LowDiskSpaceFilter: ptr.Int(35)}, 3)
 	listHostsInLabelCheckCount(t, db, filter, l1.ID, fleet.HostListOptions{LowDiskSpaceFilter: ptr.Int(25)}, 2)
@@ -353,6 +390,7 @@ func testLabelsListHostsInLabelAndStatus(t *testing.T, db *Datastore) {
 		NodeKey:         ptr.String("1"),
 		UUID:            "1",
 		Hostname:        "foo.local",
+		Platform:        "darwin",
 	})
 	require.NoError(t, err)
 
@@ -366,6 +404,7 @@ func testLabelsListHostsInLabelAndStatus(t *testing.T, db *Datastore) {
 		NodeKey:         ptr.String("2"),
 		UUID:            "2",
 		Hostname:        "bar.local",
+		Platform:        "darwin",
 	})
 	require.NoError(t, err)
 	h3, err := db.NewHost(context.Background(), &fleet.Host{
@@ -377,6 +416,7 @@ func testLabelsListHostsInLabelAndStatus(t *testing.T, db *Datastore) {
 		NodeKey:         ptr.String("3"),
 		UUID:            "3",
 		Hostname:        "baz.local",
+		Platform:        "darwin",
 	})
 	require.NoError(t, err)
 
@@ -416,6 +456,7 @@ func testLabelsListHostsInLabelAndTeamFilter(deferred bool, t *testing.T, db *Da
 		NodeKey:         ptr.String("1"),
 		UUID:            "1",
 		Hostname:        "foo.local",
+		Platform:        "darwin",
 	})
 	require.Nil(t, err)
 
@@ -429,6 +470,7 @@ func testLabelsListHostsInLabelAndTeamFilter(deferred bool, t *testing.T, db *Da
 		NodeKey:         ptr.String("2"),
 		UUID:            "2",
 		Hostname:        "bar.local",
+		Platform:        "darwin",
 	})
 	require.Nil(t, err)
 
@@ -477,41 +519,44 @@ func testLabelsListHostsInLabelAndTeamFilter(deferred bool, t *testing.T, db *Da
 	listHostsInLabelCheckCount(t, db, userFilter, l1.ID, fleet.HostListOptions{TeamFilter: teamIDFilterNil}, 2)  // h1 and h2
 
 	// test team filter in combination with macos settings filter
+	nanoEnrollAndSetHostMDMData(t, db, h1, false)
+	require.NoError(t, err)
 	require.NoError(t, db.BulkUpsertMDMAppleHostProfiles(context.Background(), []*fleet.MDMAppleBulkUpsertHostProfilePayload{
 		{
-			ProfileID:         1,
+			ProfileUUID:       "a" + uuid.NewString(),
 			ProfileIdentifier: "identifier",
 			HostUUID:          h1.UUID, // hosts[0] is assgined to team 1
 			CommandUUID:       "command-uuid-1",
-			OperationType:     fleet.MDMAppleOperationTypeInstall,
-			Status:            &fleet.MDMAppleDeliveryVerifying,
+			OperationType:     fleet.MDMOperationTypeInstall,
+			Status:            &fleet.MDMDeliveryVerifying,
 			Checksum:          []byte("csum"),
 		},
 	}))
-	listHostsInLabelCheckCount(t, db, userFilter, l1.ID, fleet.HostListOptions{TeamFilter: &team1.ID, MacOSSettingsFilter: fleet.MacOSSettingsVerifying}, 1) // h1
-	listHostsInLabelCheckCount(t, db, userFilter, l1.ID, fleet.HostListOptions{TeamFilter: &team2.ID, MacOSSettingsFilter: fleet.MacOSSettingsVerifying}, 0) // wrong team
+	listHostsInLabelCheckCount(t, db, userFilter, l1.ID, fleet.HostListOptions{TeamFilter: &team1.ID, MacOSSettingsFilter: fleet.OSSettingsVerifying}, 1) // h1
+	listHostsInLabelCheckCount(t, db, userFilter, l1.ID, fleet.HostListOptions{TeamFilter: &team2.ID, MacOSSettingsFilter: fleet.OSSettingsVerifying}, 0) // wrong team
 	// macos settings filter does not support "all teams" so teamIDFilterNil acts the same as teamIDFilterZero
-	listHostsInLabelCheckCount(t, db, userFilter, l1.ID, fleet.HostListOptions{TeamFilter: teamIDFilterZero, MacOSSettingsFilter: fleet.MacOSSettingsVerifying}, 0) // no team
-	listHostsInLabelCheckCount(t, db, userFilter, l1.ID, fleet.HostListOptions{TeamFilter: teamIDFilterNil, MacOSSettingsFilter: fleet.MacOSSettingsVerifying}, 0)  // no team
-	listHostsInLabelCheckCount(t, db, userFilter, l1.ID, fleet.HostListOptions{MacOSSettingsFilter: fleet.MacOSSettingsVerifying}, 0)                               // no team
+	listHostsInLabelCheckCount(t, db, userFilter, l1.ID, fleet.HostListOptions{TeamFilter: teamIDFilterZero, MacOSSettingsFilter: fleet.OSSettingsVerifying}, 0) // no team
+	listHostsInLabelCheckCount(t, db, userFilter, l1.ID, fleet.HostListOptions{TeamFilter: teamIDFilterNil, MacOSSettingsFilter: fleet.OSSettingsVerifying}, 0)  // no team
+	listHostsInLabelCheckCount(t, db, userFilter, l1.ID, fleet.HostListOptions{MacOSSettingsFilter: fleet.OSSettingsVerifying}, 0)                               // no team
 
+	nanoEnrollAndSetHostMDMData(t, db, h2, false)
 	require.NoError(t, db.BulkUpsertMDMAppleHostProfiles(context.Background(), []*fleet.MDMAppleBulkUpsertHostProfilePayload{
 		{
-			ProfileID:         1,
+			ProfileUUID:       "a" + uuid.NewString(),
 			ProfileIdentifier: "identifier",
 			HostUUID:          h2.UUID, // hosts[9] is assgined to no team
 			CommandUUID:       "command-uuid-2",
-			OperationType:     fleet.MDMAppleOperationTypeInstall,
-			Status:            &fleet.MDMAppleDeliveryVerifying,
+			OperationType:     fleet.MDMOperationTypeInstall,
+			Status:            &fleet.MDMDeliveryVerifying,
 			Checksum:          []byte("csum"),
 		},
 	}))
-	listHostsInLabelCheckCount(t, db, userFilter, l1.ID, fleet.HostListOptions{TeamFilter: &team1.ID, MacOSSettingsFilter: fleet.MacOSSettingsVerifying}, 1) // h1
-	listHostsInLabelCheckCount(t, db, userFilter, l1.ID, fleet.HostListOptions{TeamFilter: &team2.ID, MacOSSettingsFilter: fleet.MacOSSettingsVerifying}, 0) // wrong team
+	listHostsInLabelCheckCount(t, db, userFilter, l1.ID, fleet.HostListOptions{TeamFilter: &team1.ID, MacOSSettingsFilter: fleet.OSSettingsVerifying}, 1) // h1
+	listHostsInLabelCheckCount(t, db, userFilter, l1.ID, fleet.HostListOptions{TeamFilter: &team2.ID, MacOSSettingsFilter: fleet.OSSettingsVerifying}, 0) // wrong team
 	// macos settings filter does not support "all teams" so both teamIDFilterNil acts the same as teamIDFilterZero
-	listHostsInLabelCheckCount(t, db, userFilter, l1.ID, fleet.HostListOptions{TeamFilter: teamIDFilterZero, MacOSSettingsFilter: fleet.MacOSSettingsVerifying}, 1) // h2
-	listHostsInLabelCheckCount(t, db, userFilter, l1.ID, fleet.HostListOptions{TeamFilter: teamIDFilterNil, MacOSSettingsFilter: fleet.MacOSSettingsVerifying}, 1)  // h2
-	listHostsInLabelCheckCount(t, db, userFilter, l1.ID, fleet.HostListOptions{MacOSSettingsFilter: fleet.MacOSSettingsVerifying}, 1)                               // h2
+	listHostsInLabelCheckCount(t, db, userFilter, l1.ID, fleet.HostListOptions{TeamFilter: teamIDFilterZero, MacOSSettingsFilter: fleet.OSSettingsVerifying}, 1) // h2
+	listHostsInLabelCheckCount(t, db, userFilter, l1.ID, fleet.HostListOptions{TeamFilter: teamIDFilterNil, MacOSSettingsFilter: fleet.OSSettingsVerifying}, 1)  // h2
+	listHostsInLabelCheckCount(t, db, userFilter, l1.ID, fleet.HostListOptions{MacOSSettingsFilter: fleet.OSSettingsVerifying}, 1)                               // h2
 }
 
 func testLabelsBuiltIn(t *testing.T, db *Datastore) {
@@ -647,9 +692,35 @@ func testLabelsChangeDetails(t *testing.T, db *Datastore) {
 	err = db.ApplyLabelSpecs(context.Background(), []*fleet.LabelSpec{&label})
 	require.Nil(t, err)
 
-	saved, err := db.Label(context.Background(), label.ID)
+	filter := fleet.TeamFilter{User: &fleet.User{GlobalRole: ptr.String(fleet.RoleAdmin)}}
+	saved, _, err := db.Label(context.Background(), label.ID, filter)
 	require.Nil(t, err)
 	assert.Equal(t, label.Name, saved.Name)
+	assert.Equal(t, label.Description, saved.Description)
+
+	// Create an Apple config profile, which should reflect a change in label's name
+	profA, err := db.NewMDMAppleConfigProfile(context.Background(), *generateCP("a", "a", 0))
+	require.NoError(t, err)
+	ExecAdhocSQL(t, db, func(q sqlx.ExtContext) error {
+		_, err := q.ExecContext(context.Background(),
+			"INSERT INTO mdm_configuration_profile_labels (apple_profile_uuid, label_name, label_id) VALUES (?, ?, ?)",
+			profA.ProfileUUID, label.Name, label.ID)
+		return err
+	})
+	label.Name = "changed name"
+	// ApplyLabelSpecs can't update the name -- it simply creates a new label, so we need to call SaveLabel.
+	saved.Name = label.Name
+	saved2, _, err := db.SaveLabel(context.Background(), saved, filter)
+	require.NoError(t, err)
+	assert.Equal(t, label.Name, saved2.Name)
+	assert.Equal(t, label.Description, saved2.Description)
+
+	var configProfileLabelName string
+	ExecAdhocSQL(t, db, func(q sqlx.ExtContext) error {
+		return sqlx.GetContext(context.Background(), q, &configProfileLabelName,
+			"SELECT label_name FROM mdm_configuration_profile_labels WHERE label_id = ?", label.ID)
+	})
+	assert.Equal(t, label.Name, configProfileLabelName)
 }
 
 func setupLabelSpecsTest(t *testing.T, ds fleet.Datastore) []*fleet.LabelSpec {
@@ -708,7 +779,10 @@ func testLabelsGetSpec(t *testing.T, ds *Datastore) {
 	for _, s := range expectedSpecs {
 		spec, err := ds.GetLabelSpec(context.Background(), s.Name)
 		require.Nil(t, err)
-		assert.Equal(t, s, spec)
+
+		require.True(t, cmp.Equal(s, spec, cmp.FilterPath(func(p cmp.Path) bool {
+			return p.String() == "ID"
+		}, cmp.Ignore())))
 	}
 }
 
@@ -732,8 +806,31 @@ func testLabelsIDsByName(t *testing.T, ds *Datastore) {
 
 	labels, err := ds.LabelIDsByName(context.Background(), []string{"foo", "bar", "bing"})
 	require.Nil(t, err)
-	sort.Slice(labels, func(i, j int) bool { return labels[i] < labels[j] })
-	assert.Equal(t, []uint{1, 2, 3}, labels)
+	assert.Equal(t, map[string]uint{"foo": 1, "bar": 2, "bing": 3}, labels)
+}
+
+func testLabelsByName(t *testing.T, ds *Datastore) {
+	setupLabelSpecsTest(t, ds)
+
+	names := []string{"foo", "bar", "bing"}
+	labels, err := ds.LabelsByName(context.Background(), names)
+	require.NoError(t, err)
+	require.Len(t, labels, 3)
+	for _, name := range names {
+		assert.Contains(t, labels, name)
+		assert.Equal(t, name, labels[name].Name)
+		switch name {
+		case "foo":
+			assert.Equal(t, uint(1), labels[name].ID)
+			assert.Equal(t, "foo description", labels[name].Description)
+		case "bar":
+			assert.Equal(t, uint(2), labels[name].ID)
+			assert.Empty(t, labels[name].Description)
+		case "bing":
+			assert.Equal(t, uint(3), labels[name].ID)
+			assert.Empty(t, labels[name].Description)
+		}
+	}
 }
 
 func testLabelsSave(t *testing.T, db *Datastore) {
@@ -757,18 +854,37 @@ func testLabelsSave(t *testing.T, db *Datastore) {
 	}
 	label, err = db.NewLabel(context.Background(), label)
 	require.NoError(t, err)
+
+	// Create an Apple config profile
+	profA, err := db.NewMDMAppleConfigProfile(context.Background(), *generateCP("a", "a", 0))
+	require.NoError(t, err)
+	ExecAdhocSQL(t, db, func(q sqlx.ExtContext) error {
+		_, err := q.ExecContext(context.Background(),
+			"INSERT INTO mdm_configuration_profile_labels (apple_profile_uuid, label_name, label_id) VALUES (?, ?, ?)",
+			profA.ProfileUUID, label.Name, label.ID)
+		return err
+	})
+
 	label.Name = "changed name"
 	label.Description = "changed description"
 
 	require.NoError(t, db.RecordLabelQueryExecutions(context.Background(), h1, map[uint]*bool{label.ID: ptr.Bool(true)}, time.Now(), false))
 
-	_, err = db.SaveLabel(context.Background(), label)
+	filter := fleet.TeamFilter{User: &fleet.User{GlobalRole: ptr.String(fleet.RoleAdmin)}}
+	_, _, err = db.SaveLabel(context.Background(), label, filter)
 	require.NoError(t, err)
-	saved, err := db.Label(context.Background(), label.ID)
+	saved, _, err := db.Label(context.Background(), label.ID, filter)
 	require.NoError(t, err)
 	assert.Equal(t, label.Name, saved.Name)
 	assert.Equal(t, label.Description, saved.Description)
 	assert.Equal(t, 1, saved.HostCount)
+
+	var configProfileLabelName string
+	ExecAdhocSQL(t, db, func(q sqlx.ExtContext) error {
+		return sqlx.GetContext(context.Background(), q, &configProfileLabelName,
+			"SELECT label_name FROM mdm_configuration_profile_labels WHERE label_id = ?", label.ID)
+	})
+	assert.Equal(t, label.Name, configProfileLabelName)
 }
 
 func testLabelsQueriesForCentOSHost(t *testing.T, db *Datastore) {
@@ -825,25 +941,65 @@ func testLabelsRecordNonexistentQueryLabelExecution(t *testing.T, db *Datastore)
 }
 
 func testDeleteLabel(t *testing.T, db *Datastore) {
-	l, err := db.NewLabel(context.Background(), &fleet.Label{
+	ctx := context.Background()
+	l, err := db.NewLabel(ctx, &fleet.Label{
 		Name:  t.Name(),
 		Query: "query1",
 	})
 	require.NoError(t, err)
 
-	p, err := db.NewPack(context.Background(), &fleet.Pack{
+	p, err := db.NewPack(ctx, &fleet.Pack{
 		Name:     t.Name(),
 		LabelIDs: []uint{l.ID},
 	})
 	require.NoError(t, err)
 
-	require.NoError(t, db.DeleteLabel(context.Background(), l.Name))
+	require.NoError(t, db.DeleteLabel(ctx, l.Name))
 
-	newP, err := db.Pack(context.Background(), p.ID)
+	newP, err := db.Pack(ctx, p.ID)
 	require.NoError(t, err)
 	require.Empty(t, newP.Labels)
 
-	require.NoError(t, db.DeletePack(context.Background(), newP.Name))
+	require.NoError(t, db.DeletePack(ctx, newP.Name))
+
+	// delete a non-existing label
+	err = db.DeleteLabel(ctx, "no-such-label")
+	require.Error(t, err)
+	var nfe fleet.NotFoundError
+	require.ErrorAs(t, err, &nfe)
+
+	// create a software installer and scope it via a label
+	u := test.NewUser(t, db, "user1", "user1@example.com", false)
+	installer, err := fleet.NewTempFileReader(strings.NewReader("echo"), t.TempDir)
+	require.NoError(t, err)
+	installerID, _, err := db.MatchOrCreateSoftwareInstaller(ctx, &fleet.UploadSoftwareInstallerPayload{
+		InstallScript:   "install foo",
+		InstallerFile:   installer,
+		StorageID:       uuid.NewString(),
+		Filename:        "foo.pkg",
+		Title:           "foo",
+		Source:          "apps",
+		Version:         "0.0.1",
+		UserID:          u.ID,
+		ValidatedLabels: &fleet.LabelIdentsWithScope{},
+	})
+	require.NoError(t, err)
+
+	l2, err := db.NewLabel(ctx, &fleet.Label{
+		Name:  t.Name() + "2",
+		Query: "query2",
+	})
+	require.NoError(t, err)
+
+	ExecAdhocSQL(t, db, func(q sqlx.ExtContext) error {
+		_, err := q.ExecContext(ctx, `INSERT INTO software_installer_labels (software_installer_id, label_id) VALUES (?, ?)`, installerID, l2.ID)
+		return err
+	})
+
+	// try to delete that label referenced by software installer
+	err = db.DeleteLabel(ctx, l2.Name)
+	require.Error(t, err)
+	require.True(t, fleet.IsForeignKey(err))
 }
 
 func testLabelsSummary(t *testing.T, db *Datastore) {
@@ -904,7 +1060,7 @@ func testLabelsSummary(t *testing.T, db *Datastore) {
 	require.Len(t, ls, 5)
 }
 
-func testListHostsInLabelFailingPolicies(t *testing.T, ds *Datastore) {
+func testListHostsInLabelIssues(t *testing.T, ds *Datastore) {
 	user1 := test.NewUser(t, ds, "Alice", "alice@example.com", true)
 	for i := 0; i < 10; i++ {
 		_, err := ds.NewHost(context.Background(), &fleet.Host{
@@ -922,8 +1078,8 @@ func testListHostsInLabelFailingPolicies(t *testing.T, ds *Datastore) {
 
 	filter := fleet.TeamFilter{User: test.UserAdmin}
 
-	q := test.NewQuery(t, ds, "query1", "select 1", 0, true)
-	q2 := test.NewQuery(t, ds, "query2", "select 1", 0, true)
+	q := test.NewQuery(t, ds, nil, "query1", "select 1", 0, true)
+	q2 := test.NewQuery(t, ds, nil, "query2", "select 1", 0, true)
 	p, err := ds.NewGlobalPolicy(context.Background(), &user1.ID, fleet.PolicyPayload{
 		QueryID: &q.ID,
 	})
@@ -955,29 +1111,102 @@ func testListHostsInLabelFailingPolicies(t *testing.T, ds *Datastore) {
 	h2 := hosts[1]
 
 	assert.Zero(t, h1.HostIssues.FailingPoliciesCount)
+	assert.Zero(t, *h1.HostIssues.CriticalVulnerabilitiesCount)
 	assert.Zero(t, h1.HostIssues.TotalIssuesCount)
 	assert.Zero(t, h2.HostIssues.FailingPoliciesCount)
+	assert.Zero(t, *h2.HostIssues.CriticalVulnerabilitiesCount)
 	assert.Zero(t, h2.HostIssues.TotalIssuesCount)
 
 	require.NoError(t, ds.RecordPolicyQueryExecutions(context.Background(), h1, map[uint]*bool{p.ID: ptr.Bool(true)}, time.Now(), false))
 
 	require.NoError(t, ds.RecordPolicyQueryExecutions(context.Background(), h2, map[uint]*bool{p.ID: ptr.Bool(false), p2.ID: ptr.Bool(false)}, time.Now(), false))
-	checkLabelHostIssues(t, ds, hosts, l1.ID, filter, h2.ID, fleet.HostListOptions{}, 2)
+	checkLabelHostIssues(t, ds, l1.ID, filter, h2.ID, fleet.HostListOptions{}, 2, 0)
+
+	// Add a critical vulnerability
+	// seed software
+	software := []fleet.Software{
+		{Name: "foo0", Version: "0", Source: "chrome_extensions"}, // vulnerable
+		{Name: "foo1", Version: "1", Source: "chrome_extensions"},
+		{Name: "foo2", Version: "2", Source: "chrome_extensions"},
+		{Name: "foo3", Version: "3", Source: "chrome_extensions"},
+		{Name: "foo4", Version: "4", Source: "chrome_extensions"}, // vulnerable
+		{Name: "foo5", Version: "5", Source: "chrome_extensions"}, // vulnerable
+		{Name: "foo6", Version: "6", Source: "chrome_extensions"}, // vulnerable
+		{Name: "foo7", Version: "7", Source: "chrome_extensions"}, // vulnerable
+	}
+
+	for i := 0; i < len(software); i++ {
+		_, err := ds.UpdateHostSoftware(context.Background(), hosts[i].ID, software[:i+1])
+		require.NoError(t, err)
+	}
+
+	softwareItems := make([]fleet.Software, 0, len(software))
+	ctx := context.Background()
+	require.NoError(t, sqlx.SelectContext(ctx, ds.reader(ctx), &softwareItems, "SELECT id, version FROM software"))
+	require.Len(t, softwareItems, len(software))
+
+	for _, sw := range softwareItems {
+		_, err := ds.InsertSoftwareVulnerability(
+			context.Background(), fleet.SoftwareVulnerability{
+				CVE:        fmt.Sprintf("CVE-%s", sw.Version),
+				SoftwareID: sw.ID,
+			}, fleet.NVDSource,
+		)
+		require.NoError(t, err)
+	}
+	require.NoError(
+		t, ds.InsertCVEMeta(
+			ctx, []fleet.CVEMeta{
+				{
+					CVE:       "CVE-0",
+					CVSSScore: ptr.Float64(2 * criticalCVSSScoreCutoff),
+				},
+				{
+					CVE:       "CVE-3",
+					CVSSScore: ptr.Float64(criticalCVSSScoreCutoff), // not critical
+				},
+				{
+					CVE:       "CVE-4",
+					CVSSScore: ptr.Float64(criticalCVSSScoreCutoff + 0.001),
+				},
+				{
+					CVE:       "CVE-5",
+					CVSSScore: ptr.Float64(criticalCVSSScoreCutoff + 0.01),
+				},
+				{
+					CVE:       "CVE-6",
+					CVSSScore: ptr.Float64(criticalCVSSScoreCutoff + 0.1),
+				},
+				{
+					CVE:       "CVE-7",
+					CVSSScore: ptr.Float64(criticalCVSSScoreCutoff + 1),
+				},
+			},
+		),
+	)
+	// Populate critical vulnerabilities, which can be done with premium license.
+	ctx = license.NewContext(ctx, &fleet.LicenseInfo{Tier: fleet.TierPremium})
+	assert.NoError(t, ds.UpdateHostIssuesVulnerabilities(ctx))
+	checkLabelHostIssues(t, ds, l1.ID, filter, hosts[6].ID, fleet.HostListOptions{}, 0, 4)
 
 	require.NoError(t, ds.RecordPolicyQueryExecutions(context.Background(), h2, map[uint]*bool{p.ID: ptr.Bool(true), p2.ID: ptr.Bool(false)}, time.Now(), false))
-	checkLabelHostIssues(t, ds, hosts, l1.ID, filter, h2.ID, fleet.HostListOptions{}, 1)
+	checkLabelHostIssues(t, ds, l1.ID, filter, h2.ID, fleet.HostListOptions{}, 1, 1)
 
 	require.NoError(t, ds.RecordPolicyQueryExecutions(context.Background(), h2, map[uint]*bool{p.ID: ptr.Bool(true), p2.ID: ptr.Bool(true)}, time.Now(), false))
-	checkLabelHostIssues(t, ds, hosts, l1.ID, filter, h2.ID, fleet.HostListOptions{}, 0)
+	checkLabelHostIssues(t, ds, l1.ID, filter, h2.ID, fleet.HostListOptions{}, 0, 1)
 
 	require.NoError(t, ds.RecordPolicyQueryExecutions(context.Background(), h1, map[uint]*bool{p.ID: ptr.Bool(false)}, time.Now(), false))
-	checkLabelHostIssues(t, ds, hosts, l1.ID, filter, h1.ID, fleet.HostListOptions{}, 1)
+	checkLabelHostIssues(t, ds, l1.ID, filter, h1.ID, fleet.HostListOptions{}, 1, 1)
 
-	checkLabelHostIssues(t, ds, hosts, l1.ID, filter, h1.ID, fleet.HostListOptions{DisableFailingPolicies: true}, 0)
+	checkLabelHostIssues(t, ds, l1.ID, filter, h1.ID, fleet.HostListOptions{DisableIssues: true}, 0, 0)
+	checkLabelHostIssues(t, ds, l1.ID, filter, hosts[6].ID, fleet.HostListOptions{DisableIssues: true}, 0, 0)
 }
 
-func checkLabelHostIssues(t *testing.T, ds *Datastore, hosts []*fleet.Host, lid uint, filter fleet.TeamFilter, hid uint, opts fleet.HostListOptions, expected int) {
-	hosts = listHostsInLabelCheckCount(t, ds, filter, lid, opts, 10)
+func checkLabelHostIssues(
+	t *testing.T, ds *Datastore, lid uint, filter fleet.TeamFilter, hid uint, opts fleet.HostListOptions,
+	failingPoliciesExpected uint64, criticalVulnerabilitiesExpected uint64,
+) {
+	hosts := listHostsInLabelCheckCount(t, ds, filter, lid, opts, 10)
 	foundH2 := false
 	var foundHost *fleet.Host
 	for _, host := range hosts {
@@ -988,17 +1217,21 @@ func checkLabelHostIssues(t *testing.T, ds *Datastore, hosts []*fleet.Host, lid 
 		}
 	}
 	require.True(t, foundH2)
-	assert.Equal(t, expected, foundHost.HostIssues.FailingPoliciesCount)
-	assert.Equal(t, expected, foundHost.HostIssues.TotalIssuesCount)
+	assert.Equal(t, failingPoliciesExpected, foundHost.HostIssues.FailingPoliciesCount)
 
-	if opts.DisableFailingPolicies {
+	if opts.DisableIssues {
+		assert.Nil(t, foundHost.HostIssues.CriticalVulnerabilitiesCount)
+		assert.Zero(t, foundHost.HostIssues.TotalIssuesCount)
 		return
 	}
+	assert.Equal(t, criticalVulnerabilitiesExpected, *foundHost.HostIssues.CriticalVulnerabilitiesCount)
+	assert.Equal(t, failingPoliciesExpected+criticalVulnerabilitiesExpected, foundHost.HostIssues.TotalIssuesCount)
 
 	hostById, err := ds.Host(context.Background(), hid)
 	require.NoError(t, err)
-	assert.Equal(t, expected, hostById.HostIssues.FailingPoliciesCount)
-	assert.Equal(t, expected, hostById.HostIssues.TotalIssuesCount)
+	assert.Equal(t, failingPoliciesExpected, hostById.HostIssues.FailingPoliciesCount)
+	assert.Equal(t, failingPoliciesExpected+criticalVulnerabilitiesExpected, hostById.HostIssues.TotalIssuesCount)
+	assert.Equal(t, foundHost.HostIssues.CriticalVulnerabilitiesCount, hostById.HostIssues.CriticalVulnerabilitiesCount)
 }
 
 func testListHostsInLabelDiskEncryptionStatus(t *testing.T, ds *Datastore) {
@@ -1019,6 +1252,7 @@ func testListHostsInLabelDiskEncryptionStatus(t *testing.T, ds *Datastore) {
 		})
 		require.NoError(t, err)
 		hosts = append(hosts, h)
+		nanoEnrollAndSetHostMDMData(t, ds, h, false)
 	}
 
 	// set up data
@@ -1026,12 +1260,13 @@ func testListHostsInLabelDiskEncryptionStatus(t *testing.T, ds *Datastore) {
 	require.NoError(t, err)
 
 	// verifying status
-	upsertHostCPs([]*fleet.Host{hosts[0], hosts[1]}, []*fleet.MDMAppleConfigProfile{noTeamFVProfile}, fleet.MDMAppleOperationTypeInstall, &fleet.MDMAppleDeliveryVerifying, ctx, ds, t)
+	upsertHostCPs([]*fleet.Host{hosts[0], hosts[1]}, []*fleet.MDMAppleConfigProfile{noTeamFVProfile}, fleet.MDMOperationTypeInstall, &fleet.MDMDeliveryVerifying, ctx, ds, t)
 	oneMinuteAfterThreshold := time.Now().Add(+1 * time.Minute)
-	createDiskEncryptionRecord(ctx, ds, t, hosts[0].ID, "key-1", true, oneMinuteAfterThreshold)
-	createDiskEncryptionRecord(ctx, ds, t, hosts[1].ID, "key-1", true, oneMinuteAfterThreshold)
+	createDiskEncryptionRecord(ctx, ds, t, hosts[0], "key-1", true, oneMinuteAfterThreshold)
+	createDiskEncryptionRecord(ctx, ds, t, hosts[1], "key-1", true, oneMinuteAfterThreshold)
 
 	listHostsCheckCount(t, ds, fleet.TeamFilter{User: test.UserAdmin}, fleet.HostListOptions{MacOSSettingsDiskEncryptionFilter: fleet.DiskEncryptionVerifying}, 2)
+	listHostsCheckCount(t, ds, fleet.TeamFilter{User: test.UserAdmin}, fleet.HostListOptions{MacOSSettingsDiskEncryptionFilter: fleet.DiskEncryptionVerified}, 0)
 	listHostsCheckCount(t, ds, fleet.TeamFilter{User: test.UserAdmin}, fleet.HostListOptions{MacOSSettingsDiskEncryptionFilter: fleet.DiskEncryptionActionRequired}, 0)
 	listHostsCheckCount(t, ds, fleet.TeamFilter{User: test.UserAdmin}, fleet.HostListOptions{MacOSSettingsDiskEncryptionFilter: fleet.DiskEncryptionEnforcing}, 0)
 	listHostsCheckCount(t, ds, fleet.TeamFilter{User: test.UserAdmin}, fleet.HostListOptions{MacOSSettingsDiskEncryptionFilter: fleet.DiskEncryptionFailed}, 0)
@@ -1041,8 +1276,8 @@ func testListHostsInLabelDiskEncryptionStatus(t *testing.T, ds *Datastore) {
 	upsertHostCPs(
 		[]*fleet.Host{hosts[2], hosts[3]},
 		[]*fleet.MDMAppleConfigProfile{noTeamFVProfile},
-		fleet.MDMAppleOperationTypeInstall,
-		&fleet.MDMAppleDeliveryVerifying, ctx, ds, t,
+		fleet.MDMOperationTypeInstall,
+		&fleet.MDMDeliveryVerifying, ctx, ds, t,
 	)
 	err = ds.SetHostsDiskEncryptionKeyStatus(ctx, []uint{hosts[2].ID}, false, oneMinuteAfterThreshold)
 	require.NoError(t, err)
@@ -1050,6 +1285,7 @@ func testListHostsInLabelDiskEncryptionStatus(t *testing.T, ds *Datastore) {
 	require.NoError(t, err)
 
 	listHostsCheckCount(t, ds, fleet.TeamFilter{User: test.UserAdmin}, fleet.HostListOptions{MacOSSettingsDiskEncryptionFilter: fleet.DiskEncryptionVerifying}, 2)
+	listHostsCheckCount(t, ds, fleet.TeamFilter{User: test.UserAdmin}, fleet.HostListOptions{MacOSSettingsDiskEncryptionFilter: fleet.DiskEncryptionVerified}, 0)
 	listHostsCheckCount(t, ds, fleet.TeamFilter{User: test.UserAdmin}, fleet.HostListOptions{MacOSSettingsDiskEncryptionFilter: fleet.DiskEncryptionActionRequired}, 2)
 	listHostsCheckCount(t, ds, fleet.TeamFilter{User: test.UserAdmin}, fleet.HostListOptions{MacOSSettingsDiskEncryptionFilter: fleet.DiskEncryptionEnforcing}, 0)
 	listHostsCheckCount(t, ds, fleet.TeamFilter{User: test.UserAdmin}, fleet.HostListOptions{MacOSSettingsDiskEncryptionFilter: fleet.DiskEncryptionFailed}, 0)
@@ -1061,11 +1297,12 @@ func testListHostsInLabelDiskEncryptionStatus(t *testing.T, ds *Datastore) {
 	upsertHostCPs(
 		[]*fleet.Host{hosts[4]},
 		[]*fleet.MDMAppleConfigProfile{noTeamFVProfile},
-		fleet.MDMAppleOperationTypeInstall,
-		&fleet.MDMAppleDeliveryPending, ctx, ds, t,
+		fleet.MDMOperationTypeInstall,
+		&fleet.MDMDeliveryPending, ctx, ds, t,
 	)
 
 	listHostsCheckCount(t, ds, fleet.TeamFilter{User: test.UserAdmin}, fleet.HostListOptions{MacOSSettingsDiskEncryptionFilter: fleet.DiskEncryptionVerifying}, 2)
+	listHostsCheckCount(t, ds, fleet.TeamFilter{User: test.UserAdmin}, fleet.HostListOptions{MacOSSettingsDiskEncryptionFilter: fleet.DiskEncryptionVerified}, 0)
 	listHostsCheckCount(t, ds, fleet.TeamFilter{User: test.UserAdmin}, fleet.HostListOptions{MacOSSettingsDiskEncryptionFilter: fleet.DiskEncryptionActionRequired}, 2)
 	listHostsCheckCount(t, ds, fleet.TeamFilter{User: test.UserAdmin}, fleet.HostListOptions{MacOSSettingsDiskEncryptionFilter: fleet.DiskEncryptionEnforcing}, 1)
 	listHostsCheckCount(t, ds, fleet.TeamFilter{User: test.UserAdmin}, fleet.HostListOptions{MacOSSettingsDiskEncryptionFilter: fleet.DiskEncryptionFailed}, 0)
@@ -1075,11 +1312,12 @@ func testListHostsInLabelDiskEncryptionStatus(t *testing.T, ds *Datastore) {
 	upsertHostCPs(
 		[]*fleet.Host{hosts[5]},
 		[]*fleet.MDMAppleConfigProfile{noTeamFVProfile},
-		fleet.MDMAppleOperationTypeInstall,
+		fleet.MDMOperationTypeInstall,
 		nil, ctx, ds, t,
 	)
 
 	listHostsCheckCount(t, ds, fleet.TeamFilter{User: test.UserAdmin}, fleet.HostListOptions{MacOSSettingsDiskEncryptionFilter: fleet.DiskEncryptionVerifying}, 2)
+	listHostsCheckCount(t, ds, fleet.TeamFilter{User: test.UserAdmin}, fleet.HostListOptions{MacOSSettingsDiskEncryptionFilter: fleet.DiskEncryptionVerified}, 0)
 	listHostsCheckCount(t, ds, fleet.TeamFilter{User: test.UserAdmin}, fleet.HostListOptions{MacOSSettingsDiskEncryptionFilter: fleet.DiskEncryptionActionRequired}, 2)
 	listHostsCheckCount(t, ds, fleet.TeamFilter{User: test.UserAdmin}, fleet.HostListOptions{MacOSSettingsDiskEncryptionFilter: fleet.DiskEncryptionEnforcing}, 2)
 	listHostsCheckCount(t, ds, fleet.TeamFilter{User: test.UserAdmin}, fleet.HostListOptions{MacOSSettingsDiskEncryptionFilter: fleet.DiskEncryptionFailed}, 0)
@@ -1089,33 +1327,609 @@ func testListHostsInLabelDiskEncryptionStatus(t *testing.T, ds *Datastore) {
 	upsertHostCPs(
 		[]*fleet.Host{hosts[6]},
 		[]*fleet.MDMAppleConfigProfile{noTeamFVProfile},
-		fleet.MDMAppleOperationTypeInstall,
-		&fleet.MDMAppleDeliveryPending, ctx, ds, t,
+		fleet.MDMOperationTypeInstall,
+		&fleet.MDMDeliveryPending, ctx, ds, t,
 	)
 	err = ds.SetHostsDiskEncryptionKeyStatus(ctx, []uint{hosts[6].ID}, false, oneMinuteAfterThreshold)
 	require.NoError(t, err)
 
 	listHostsCheckCount(t, ds, fleet.TeamFilter{User: test.UserAdmin}, fleet.HostListOptions{MacOSSettingsDiskEncryptionFilter: fleet.DiskEncryptionVerifying}, 2)
+	listHostsCheckCount(t, ds, fleet.TeamFilter{User: test.UserAdmin}, fleet.HostListOptions{MacOSSettingsDiskEncryptionFilter: fleet.DiskEncryptionVerified}, 0)
 	listHostsCheckCount(t, ds, fleet.TeamFilter{User: test.UserAdmin}, fleet.HostListOptions{MacOSSettingsDiskEncryptionFilter: fleet.DiskEncryptionActionRequired}, 2)
 	listHostsCheckCount(t, ds, fleet.TeamFilter{User: test.UserAdmin}, fleet.HostListOptions{MacOSSettingsDiskEncryptionFilter: fleet.DiskEncryptionEnforcing}, 3)
 	listHostsCheckCount(t, ds, fleet.TeamFilter{User: test.UserAdmin}, fleet.HostListOptions{MacOSSettingsDiskEncryptionFilter: fleet.DiskEncryptionFailed}, 0)
 	listHostsCheckCount(t, ds, fleet.TeamFilter{User: test.UserAdmin}, fleet.HostListOptions{MacOSSettingsDiskEncryptionFilter: fleet.DiskEncryptionRemovingEnforcement}, 0)
 
 	// failed status
-	upsertHostCPs([]*fleet.Host{hosts[7], hosts[8]}, []*fleet.MDMAppleConfigProfile{noTeamFVProfile}, fleet.MDMAppleOperationTypeInstall, &fleet.MDMAppleDeliveryFailed, ctx, ds, t)
+	upsertHostCPs([]*fleet.Host{hosts[7], hosts[8]}, []*fleet.MDMAppleConfigProfile{noTeamFVProfile}, fleet.MDMOperationTypeInstall, &fleet.MDMDeliveryFailed, ctx, ds, t)
 
 	listHostsCheckCount(t, ds, fleet.TeamFilter{User: test.UserAdmin}, fleet.HostListOptions{MacOSSettingsDiskEncryptionFilter: fleet.DiskEncryptionVerifying}, 2)
+	listHostsCheckCount(t, ds, fleet.TeamFilter{User: test.UserAdmin}, fleet.HostListOptions{MacOSSettingsDiskEncryptionFilter: fleet.DiskEncryptionVerified}, 0)
 	listHostsCheckCount(t, ds, fleet.TeamFilter{User: test.UserAdmin}, fleet.HostListOptions{MacOSSettingsDiskEncryptionFilter: fleet.DiskEncryptionActionRequired}, 2)
 	listHostsCheckCount(t, ds, fleet.TeamFilter{User: test.UserAdmin}, fleet.HostListOptions{MacOSSettingsDiskEncryptionFilter: fleet.DiskEncryptionEnforcing}, 3)
 	listHostsCheckCount(t, ds, fleet.TeamFilter{User: test.UserAdmin}, fleet.HostListOptions{MacOSSettingsDiskEncryptionFilter: fleet.DiskEncryptionFailed}, 2)
 	listHostsCheckCount(t, ds, fleet.TeamFilter{User: test.UserAdmin}, fleet.HostListOptions{MacOSSettingsDiskEncryptionFilter: fleet.DiskEncryptionRemovingEnforcement}, 0)
 
 	// removing enforcement status
-	upsertHostCPs([]*fleet.Host{hosts[9]}, []*fleet.MDMAppleConfigProfile{noTeamFVProfile}, fleet.MDMAppleOperationTypeRemove, &fleet.MDMAppleDeliveryPending, ctx, ds, t)
+	upsertHostCPs([]*fleet.Host{hosts[9]}, []*fleet.MDMAppleConfigProfile{noTeamFVProfile}, fleet.MDMOperationTypeRemove, &fleet.MDMDeliveryPending, ctx, ds, t)
 
 	listHostsCheckCount(t, ds, fleet.TeamFilter{User: test.UserAdmin}, fleet.HostListOptions{MacOSSettingsDiskEncryptionFilter: fleet.DiskEncryptionVerifying}, 2)
+	listHostsCheckCount(t, ds, fleet.TeamFilter{User: test.UserAdmin}, fleet.HostListOptions{MacOSSettingsDiskEncryptionFilter: fleet.DiskEncryptionVerified}, 0)
 	listHostsCheckCount(t, ds, fleet.TeamFilter{User: test.UserAdmin}, fleet.HostListOptions{MacOSSettingsDiskEncryptionFilter: fleet.DiskEncryptionActionRequired}, 2)
 	listHostsCheckCount(t, ds, fleet.TeamFilter{User: test.UserAdmin}, fleet.HostListOptions{MacOSSettingsDiskEncryptionFilter: fleet.DiskEncryptionEnforcing}, 3)
 	listHostsCheckCount(t, ds, fleet.TeamFilter{User: test.UserAdmin}, fleet.HostListOptions{MacOSSettingsDiskEncryptionFilter: fleet.DiskEncryptionFailed}, 2)
 	listHostsCheckCount(t, ds, fleet.TeamFilter{User: test.UserAdmin}, fleet.HostListOptions{MacOSSettingsDiskEncryptionFilter: fleet.DiskEncryptionRemovingEnforcement}, 1)
+
+	// verified status
+	upsertHostCPs([]*fleet.Host{hosts[0]}, []*fleet.MDMAppleConfigProfile{noTeamFVProfile}, fleet.MDMOperationTypeInstall, &fleet.MDMDeliveryVerified, ctx, ds, t)
+	listHostsCheckCount(t, ds, fleet.TeamFilter{User: test.UserAdmin}, fleet.HostListOptions{MacOSSettingsDiskEncryptionFilter: fleet.DiskEncryptionVerifying}, 1)
+	listHostsCheckCount(t, ds, fleet.TeamFilter{User: test.UserAdmin}, fleet.HostListOptions{MacOSSettingsDiskEncryptionFilter: fleet.DiskEncryptionVerified}, 1)
+	listHostsCheckCount(t, ds, fleet.TeamFilter{User: test.UserAdmin}, fleet.HostListOptions{MacOSSettingsDiskEncryptionFilter: fleet.DiskEncryptionActionRequired}, 2)
+	listHostsCheckCount(t, ds, fleet.TeamFilter{User: test.UserAdmin}, fleet.HostListOptions{MacOSSettingsDiskEncryptionFilter: fleet.DiskEncryptionEnforcing}, 3)
+	listHostsCheckCount(t, ds, fleet.TeamFilter{User: test.UserAdmin}, fleet.HostListOptions{MacOSSettingsDiskEncryptionFilter: fleet.DiskEncryptionFailed}, 2)
+	listHostsCheckCount(t, ds, fleet.TeamFilter{User: test.UserAdmin}, fleet.HostListOptions{MacOSSettingsDiskEncryptionFilter: fleet.DiskEncryptionRemovingEnforcement}, 1)
+}
+
+func testHostMemberOfAllLabels(t *testing.T, ds *Datastore) {
+	ctx := context.Background()
+
+	//
+	// Setup test
+	// - h1 member of 'All hosts', 'Foobar' and 'Zoobar'
+	// - h2 member of 'All hosts' and 'Foobar'
+	// - h3 member of 'All hosts' and 'Zoobar'
+	// - h4 member of 'All hosts'
+	// - h5 member of no labels
+	//
+
+	allHostsLabel, err := ds.NewLabel(ctx,
+		&fleet.Label{
+			Name:                "All hosts",
+			Query:               "SELECT 1",
+			LabelType:           fleet.LabelTypeBuiltIn,
+			LabelMembershipType: fleet.LabelMembershipTypeDynamic,
+		},
+	)
+	require.NoError(t, err)
+	foobarLabel, err := ds.NewLabel(ctx, &fleet.Label{
+		Name:                "Foobar",
+		Query:               "SELECT 1;",
+		LabelType:           fleet.LabelTypeRegular,
+		LabelMembershipType: fleet.LabelMembershipTypeDynamic,
+	})
+	require.NoError(t, err)
+	zoobarLabel, err := ds.NewLabel(ctx, &fleet.Label{
+		Name:                "Zoobar",
+		Query:               "SELECT 2;",
+		LabelType:           fleet.LabelTypeRegular,
+		LabelMembershipType: fleet.LabelMembershipTypeDynamic,
+	})
+	require.NoError(t, err)
+
+	newHostFunc := func(name string) *fleet.Host {
+		h, err := ds.NewHost(ctx, &fleet.Host{
+			DetailUpdatedAt: time.Now(),
+			LabelUpdatedAt:  time.Now(),
+			PolicyUpdatedAt: time.Now(),
+			SeenTime:        time.Now(),
+			OsqueryHostID:   ptr.String(name),
+			NodeKey:         ptr.String(name),
+			UUID:            name,
+			Hostname:        "foo.local" + name,
+		})
+		require.NoError(t, err)
+		return h
+	}
+
+	h1 := newHostFunc("h1")
+	h2 := newHostFunc("h2")
+	h3 := newHostFunc("h3")
+	h4 := newHostFunc("h4")
+	h5 := newHostFunc("h5")
+	_ = h5
+
+	err = ds.RecordLabelQueryExecutions(ctx, h1, map[uint]*bool{
+		allHostsLabel.ID: ptr.Bool(true),
+		foobarLabel.ID:   ptr.Bool(true),
+		zoobarLabel.ID:   ptr.Bool(true),
+	}, time.Now(), false)
+	require.NoError(t, err)
+	err = ds.RecordLabelQueryExecutions(ctx, h2, map[uint]*bool{
+		allHostsLabel.ID: ptr.Bool(true),
+		foobarLabel.ID:   ptr.Bool(true),
+	}, time.Now(), false)
+	require.NoError(t, err)
+	err = ds.RecordLabelQueryExecutions(ctx, h3, map[uint]*bool{
+		allHostsLabel.ID: ptr.Bool(true),
+		zoobarLabel.ID:   ptr.Bool(true),
+	}, time.Now(), false)
+	require.NoError(t, err)
+	err = ds.RecordLabelQueryExecutions(ctx, h4, map[uint]*bool{
+		allHostsLabel.ID: ptr.Bool(true),
+	}, time.Now(), false)
+	require.NoError(t, err)
+
+	//
+	// Run tests for HostMemberOfAllLabels
+	//
+
+	for _, tc := range []struct {
+		name           string
+		hostID         uint
+		labelNames     []string
+		expectedResult bool
+	}{
+		{
+			name:           "nonexistent host",
+			hostID:         999,
+			labelNames:     []string{allHostsLabel.Name},
+			expectedResult: false,
+		},
+		{
+			name:           "h1 does not belong to nonexistent label",
+			hostID:         h1.ID,
+			labelNames:     []string{"Non existent label"},
+			expectedResult: false,
+		},
+		{
+			name:           "h1 does not belong to All hosts + nonexistent label",
+			hostID:         h1.ID,
+			labelNames:     []string{allHostsLabel.Name, "Non existent label"},
+			expectedResult: false,
+		},
+		{
+			name:           "h1 belongs to the given subset of labels",
+			hostID:         h1.ID,
+			labelNames:     []string{allHostsLabel.Name, foobarLabel.Name},
+			expectedResult: true,
+		},
+		{
+			name:           "h1 belongs to all the given labels",
+			hostID:         h1.ID,
+			labelNames:     []string{allHostsLabel.Name, foobarLabel.Name, zoobarLabel.Name},
+			expectedResult: true,
+		},
+		{
+			name:           "h1 member of empty label set",
+			hostID:         h1.ID,
+			labelNames:     []string{},
+			expectedResult: true,
+		},
+		{
+			name:           "h2 belongs to all the given labels",
+			hostID:         h2.ID,
+			labelNames:     []string{allHostsLabel.Name, foobarLabel.Name},
+			expectedResult: true,
+		},
+		{
+			name:           "h2 does not belongs to all the given labels",
+			hostID:         h2.ID,
+			labelNames:     []string{allHostsLabel.Name, foobarLabel.Name, zoobarLabel.Name},
+			expectedResult: false,
+		},
+		{
+			name:           "h2 belongs to the given label",
+			hostID:         h2.ID,
+			labelNames:     []string{foobarLabel.Name},
+			expectedResult: true,
+		},
+		{
+			name:           "h2 does not belong to the given label",
+			hostID:         h2.ID,
+			labelNames:     []string{zoobarLabel.Name},
+			expectedResult: false,
+		},
+		{
+			name:           "h3 belongs to all the given labels",
+			hostID:         h3.ID,
+			labelNames:     []string{allHostsLabel.Name, zoobarLabel.Name},
+			expectedResult: true,
+		},
+		{
+			name:           "h4 belongs to all the given labels",
+			hostID:         h4.ID,
+			labelNames:     []string{allHostsLabel.Name},
+			expectedResult: true,
+		},
+		{
+			name:           "h4 does not belong to the given labels",
+			hostID:         h4.ID,
+			labelNames:     []string{foobarLabel.Name},
+			expectedResult: false,
+		},
+		{
+			name:           "h5 does not belong to the given labels",
+			hostID:         h5.ID,
+			labelNames:     []string{allHostsLabel.Name},
+			expectedResult: false,
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			v, err := ds.HostMemberOfAllLabels(ctx, tc.hostID, tc.labelNames)
+			require.NoError(t, err)
+			require.Equal(t, tc.expectedResult, v)
+		})
+	}
+}
+
+func testLabelsListHostsInLabelOSSettings(t *testing.T, db *Datastore) {
+	h1, err := db.NewHost(context.Background(), &fleet.Host{
+		DetailUpdatedAt: time.Now(),
+		LabelUpdatedAt:  time.Now(),
+		PolicyUpdatedAt: time.Now(),
+		SeenTime:        time.Now(),
+		OsqueryHostID:   ptr.String("1"),
+		NodeKey:         ptr.String("1"),
+		UUID:            "1",
+		Hostname:        "foo.local",
+		Platform:        "windows",
+	})
+	require.NoError(t, err)
+
+	h2, err := db.NewHost(context.Background(), &fleet.Host{
+		DetailUpdatedAt: time.Now(),
+		LabelUpdatedAt:  time.Now(),
+		PolicyUpdatedAt: time.Now(),
+		SeenTime:        time.Now(),
+		OsqueryHostID:   ptr.String("2"),
+		NodeKey:         ptr.String("2"),
+		UUID:            "2",
+		Hostname:        "bar.local",
+		Platform:        "windows",
+	})
+	require.NoError(t, err)
+	h3, err := db.NewHost(context.Background(), &fleet.Host{
+		DetailUpdatedAt: time.Now(),
+		LabelUpdatedAt:  time.Now(),
+		PolicyUpdatedAt: time.Now(),
+		SeenTime:        time.Now(),
+		OsqueryHostID:   ptr.String("3"),
+		NodeKey:         ptr.String("3"),
+		UUID:            "3",
+		Hostname:        "baz.local",
+		Platform:        "centos",
+	})
+	require.NoError(t, err)
+
+	l1 := &fleet.LabelSpec{
+		ID:    1,
+		Name:  "label foo",
+		Query: "query1",
+	}
+	err = db.ApplyLabelSpecs(context.Background(), []*fleet.LabelSpec{l1})
+	require.Nil(t, err)
+
+	filter := fleet.TeamFilter{User: test.UserAdmin}
+	// add all hosts to label
+	for _, h := range []*fleet.Host{h1, h2, h3} {
+		require.NoError(t, db.RecordLabelQueryExecutions(context.Background(), h, map[uint]*bool{l1.ID: ptr.Bool(true)}, time.Now(), false))
+	}
+
+	// turn on disk encryption
+	ac, err := db.AppConfig(context.Background())
+	require.NoError(t, err)
+	ac.MDM.EnableDiskEncryption = optjson.SetBool(true)
+	require.NoError(t, db.SaveAppConfig(context.Background(), ac))
+
+	// add two hosts to MDM to enforce disk encryption, fleet doesn't enforce settings on centos so h3 is not included
+	for _, h := range []*fleet.Host{h1, h2} {
+		windowsEnroll(t, db, h)
+		require.NoError(t, db.SetOrUpdateMDMData(context.Background(), h.ID, false, true, "https://example.com", false, fleet.WellKnownMDMFleet, ""))
+	}
+	// add disk encryption key for h1
+	require.NoError(t, db.SetOrUpdateHostDiskEncryptionKey(context.Background(), h1, "test-key", "", ptr.Bool(true)))
+	// add disk encryption for h1
+	require.NoError(t, db.SetOrUpdateHostDisksEncryption(context.Background(), h1.ID, true))
+
+	checkHosts := func(t *testing.T, gotHosts []*fleet.Host, expectedIDs []uint) {
+		require.Len(t, gotHosts, len(expectedIDs))
+		for _, h := range gotHosts {
+			require.Contains(t, expectedIDs, h.ID)
+		}
+	}
+
+	// baseline no filter
+	hosts := listHostsInLabelCheckCount(t, db, filter, l1.ID, fleet.HostListOptions{}, 3)
+	checkHosts(t, hosts, []uint{h1.ID, h2.ID, h3.ID})
+
+	t.Run("os_settings_disk_encryption", func(t *testing.T) {
+		hosts = listHostsInLabelCheckCount(t, db, filter, l1.ID, fleet.HostListOptions{OSSettingsDiskEncryptionFilter: fleet.DiskEncryptionVerified}, 1)
+		checkHosts(t, hosts, []uint{h1.ID})
+		hosts = listHostsInLabelCheckCount(t, db, filter, l1.ID, fleet.HostListOptions{OSSettingsDiskEncryptionFilter: fleet.DiskEncryptionEnforcing}, 1)
+		checkHosts(t, hosts, []uint{h2.ID})
+	})
+
+	t.Run("os_settings", func(t *testing.T) {
+		hosts = listHostsInLabelCheckCount(t, db, filter, l1.ID, fleet.HostListOptions{OSSettingsFilter: fleet.OSSettingsVerified}, 1)
+		checkHosts(t, hosts, []uint{h1.ID})
+		hosts = listHostsInLabelCheckCount(t, db, filter, l1.ID, fleet.HostListOptions{OSSettingsFilter: fleet.OSSettingsPending}, 1)
+		checkHosts(t, hosts, []uint{h2.ID})
+	})
+}
+
+func testAddDeleteLabelsToFromHost(t *testing.T, ds *Datastore) {
+	ctx := context.Background()
+	host1, err := ds.NewHost(ctx, &fleet.Host{
+		OsqueryHostID: ptr.String("1"),
+		NodeKey:       ptr.String("1"),
+		UUID:          "1",
+		Hostname:      "foo.local",
+		Platform:      "darwin",
+	})
+	require.NoError(t, err)
+	host2, err := ds.NewHost(ctx, &fleet.Host{
+		OsqueryHostID: ptr.String("2"),
+		NodeKey:       ptr.String("2"),
+		UUID:          "2",
+		Hostname:      "bar.local",
+		Platform:      "windows",
+	})
+	require.NoError(t, err)
+
+	err = ds.AddLabelsToHost(ctx, host1.ID, nil)
+	require.NoError(t, err)
+	err = ds.RemoveLabelsFromHost(ctx, host1.ID, nil)
+	require.NoError(t, err)
+
+	label1, err := ds.NewLabel(ctx, &fleet.Label{
+		Name:                "label1",
+		Query:               "SELECT 1;",
+		LabelType:           fleet.LabelTypeRegular,
+		LabelMembershipType: fleet.LabelMembershipTypeManual,
+	})
+	require.NoError(t, err)
+	label2, err := ds.NewLabel(ctx, &fleet.Label{
+		Name:                "label2",
+		Query:               "SELECT 2;",
+		LabelType:           fleet.LabelTypeRegular,
+		LabelMembershipType: fleet.LabelMembershipTypeManual,
+	})
+	require.NoError(t, err)
+
+	// Removing a label and multiple labels that the host is not a member of.
+	err = ds.RemoveLabelsFromHost(ctx, host1.ID, []uint{label1.ID})
+	require.NoError(t, err)
+	err = ds.RemoveLabelsFromHost(ctx, host1.ID, []uint{label1.ID, label2.ID})
+	require.NoError(t, err)
+
+	filter := fleet.TeamFilter{User: &fleet.User{GlobalRole: ptr.String(fleet.RoleAdmin)}}
+
+	// Adding and removing labels.
+	err = ds.AddLabelsToHost(ctx, host1.ID, []uint{label1.ID})
+	require.NoError(t, err)
+	lbl, hids, err := ds.Label(ctx, label1.ID, filter)
+	require.NoError(t, err)
+	require.Equal(t, label1.ID, lbl.ID)
+	require.ElementsMatch(t, []uint{host1.ID}, hids)
+	getLabelUpdatedAt := func(updatedAt *time.Time) func(q sqlx.ExtContext) error {
+		return func(q sqlx.ExtContext) error {
+			return sqlx.GetContext(ctx, q, updatedAt, `SELECT updated_at FROM label_membership WHERE host_id = ? AND label_id = ?`, host1.ID, label1.ID)
+		}
+	}
+	var labelUpdatedAt1 time.Time
+	ExecAdhocSQL(t, ds, getLabelUpdatedAt(&labelUpdatedAt1))
+	time.Sleep(1 * time.Second)
+	// Add a label that the host is already member of.
+	err = ds.AddLabelsToHost(ctx, host1.ID, []uint{label1.ID})
+	require.NoError(t, err)
+	var labelUpdatedAt2 time.Time
+	ExecAdhocSQL(t, ds, getLabelUpdatedAt(&labelUpdatedAt2))
+	require.True(t, labelUpdatedAt2.After(labelUpdatedAt1))
+	labels, err := ds.ListLabelsForHost(ctx, host1.ID)
+	require.NoError(t, err)
+	require.Len(t, labels, 1)
+	require.Equal(t, "label1", labels[0].Name)
+	labels2, err := ds.ListLabelsForHost(ctx, host2.ID)
+	require.NoError(t, err)
+	require.Empty(t, labels2)
+
+	// Removing a label that the host is a member of
+	// and one that the host is not a member of.
+	err = ds.RemoveLabelsFromHost(ctx, host1.ID, []uint{label1.ID, label2.ID})
+	require.NoError(t, err)
+	labels, err = ds.ListLabelsForHost(ctx, host1.ID)
+	require.NoError(t, err)
+	require.Empty(t, labels)
+
+	// Add and remove multiple labels.
+	err = ds.AddLabelsToHost(ctx, host1.ID, []uint{label1.ID, label2.ID})
+	require.NoError(t, err)
+	labels, err = ds.ListLabelsForHost(ctx, host1.ID)
+	require.NoError(t, err)
+	require.Len(t, labels, 2)
+
+	err = ds.AddLabelsToHost(ctx, host2.ID, []uint{label1.ID})
+	require.NoError(t, err)
+	labels, err = ds.ListLabelsForHost(ctx, host2.ID)
+	require.NoError(t, err)
+	require.Len(t, labels, 1)
+
+	lbl, hids, err = ds.Label(ctx, label1.ID, filter)
+	require.NoError(t, err)
+	require.Equal(t, label1.ID, lbl.ID)
+	require.ElementsMatch(t, []uint{host1.ID, host2.ID}, hids)
+
+	err = ds.RemoveLabelsFromHost(ctx, host1.ID, []uint{label1.ID, label2.ID})
+	require.NoError(t, err)
+	labels, err = ds.ListLabelsForHost(ctx, host1.ID)
+	require.NoError(t, err)
+	require.Empty(t, labels)
+}
+
+func labelIDFromName(t *testing.T, ds fleet.Datastore, name string) uint {
+	allLbls, err := ds.ListLabels(context.Background(), fleet.TeamFilter{User: test.UserAdmin}, fleet.ListOptions{})
+	require.Nil(t, err)
+	for _, lbl := range allLbls {
+		if lbl.Name == name {
+			return lbl.ID
+		}
+	}
+	return 0
+}
+
+func testUpdateLabelMembershipByHostIDs(t *testing.T, ds *Datastore) {
+	ctx := context.Background()
+	filter := fleet.TeamFilter{User: test.UserAdmin}
+
+	host1, err := ds.NewHost(ctx, &fleet.Host{
+		OsqueryHostID: ptr.String("1"),
+		NodeKey:       ptr.String("1"),
+		UUID:          "1",
+		Hostname:      "foo.local",
+		Platform:      "darwin",
+	})
+	require.NoError(t, err)
+	host2, err := ds.NewHost(ctx, &fleet.Host{
+		OsqueryHostID: ptr.String("2"),
+		NodeKey:       ptr.String("2"),
+		UUID:          "2",
+		Hostname:      "bar.local",
+		Platform:      "windows",
+	})
+	require.NoError(t, err)
+	// hosts 2 and 3 have the same hostname
+	host3, err := ds.NewHost(ctx, &fleet.Host{
+		OsqueryHostID: ptr.String("3"),
+		NodeKey:       ptr.String("3"),
+		UUID:          "3",
+		Hostname:      "bar.local",
+		Platform:      "windows",
+	})
+	require.NoError(t, err)
+
+	label1, err := ds.NewLabel(ctx, &fleet.Label{
+		Name:                "label1",
+		Query:               "",
+		LabelType:           fleet.LabelTypeRegular,
+		LabelMembershipType: fleet.LabelMembershipTypeManual,
+	})
+	require.NoError(t, err)
+
+	// add hosts 1 and 2 to the label
+	label, hostIDs, err := ds.UpdateLabelMembershipByHostIDs(ctx, label1.ID, []uint{host1.ID, host2.ID}, filter)
+	require.NoError(t, err)
+
+	require.Equal(t, label.HostCount, 2)
+
+	// expect hosts 1 and 2 to be in the label, but not 3
+	require.NoError(t, err)
+	// correct hosts were added to label
+	require.Len(t, hostIDs, 2)
+	require.Equal(t, host1.ID, hostIDs[0])
+	require.Equal(t, host2.ID, hostIDs[1])
+
+	labelSpec, err := ds.GetLabelSpec(ctx, label1.Name)
+	require.NoError(t, err)
+	// label.Hosts contains hostnames
+	require.Len(t, labelSpec.Hosts, 2)
+	require.Equal(t, host1.Hostname, labelSpec.Hosts[0])
+	require.Equal(t, host2.Hostname, labelSpec.Hosts[1])
+
+	labels, err := ds.ListLabelsForHost(ctx, host1.ID)
+	require.NoError(t, err)
+	require.Len(t, labels, 1)
+	require.Equal(t, "label1", labels[0].Name)
+
+	labels, err = ds.ListLabelsForHost(ctx, host2.ID)
+	require.NoError(t, err)
+	require.Len(t, labels, 1)
+	require.Equal(t, "label1", labels[0].Name)
+
+	labels, err = ds.ListLabelsForHost(ctx, host3.ID)
+	require.NoError(t, err)
+	require.Len(t, labels, 0)
+
+	// modify the label to contain hosts 1 and 3, confirm
+	label, _, err = ds.UpdateLabelMembershipByHostIDs(ctx, label1.ID, []uint{host1.ID, host3.ID}, filter)
+	require.NoError(t, err)
+
+	require.Equal(t, label.HostCount, 2)
+
+	labels, err = ds.ListLabelsForHost(ctx, host1.ID)
+	require.NoError(t, err)
+	require.Len(t, labels, 1)
+	require.Equal(t, "label1", labels[0].Name)
+
+	labels, err = ds.ListLabelsForHost(ctx, host2.ID)
+	require.NoError(t, err)
+	require.Len(t, labels, 0)
+
+	labels, err = ds.ListLabelsForHost(ctx, host3.ID)
+	require.NoError(t, err)
+	require.Len(t, labels, 1)
+	require.Equal(t, "label1", labels[0].Name)
+
+	// modify the label to contain hosts 2 and 3, confirm
+	label, _, err = ds.UpdateLabelMembershipByHostIDs(ctx, label1.ID, []uint{host2.ID, host3.ID}, filter)
+	require.NoError(t, err)
+
+	require.Equal(t, label.HostCount, 2)
+
+	labels, err = ds.ListLabelsForHost(ctx, host1.ID)
+	require.NoError(t, err)
+	require.Len(t, labels, 0)
+
+	labels, err = ds.ListLabelsForHost(ctx, host2.ID)
+	require.NoError(t, err)
+	require.Len(t, labels, 1)
+	require.Equal(t, "label1", labels[0].Name)
+
+	labels, err = ds.ListLabelsForHost(ctx, host3.ID)
+	require.NoError(t, err)
+	require.Len(t, labels, 1)
+	require.Equal(t, "label1", labels[0].Name)
+
+	// modify the label to contain no hosts, confirm
+	label, _, err = ds.UpdateLabelMembershipByHostIDs(ctx, label1.ID, []uint{}, filter)
+	require.NoError(t, err)
+	require.Equal(t, label.HostCount, 0)
+
+	labels, err = ds.ListLabelsForHost(ctx, host1.ID)
+	require.NoError(t, err)
+	require.Len(t, labels, 0)
+
+	labels, err = ds.ListLabelsForHost(ctx, host2.ID)
+	require.NoError(t, err)
+	require.Len(t, labels, 0)
+
+	labels, err = ds.ListLabelsForHost(ctx, host3.ID)
+	require.NoError(t, err)
+	require.Len(t, labels, 0)
+
+	// modify the label to contain all 3 hosts, confirm
+	label, hostIDs, err = ds.UpdateLabelMembershipByHostIDs(ctx, label1.ID, []uint{host1.ID, host2.ID, host3.ID}, filter)
+	require.NoError(t, err)
+
+	require.Equal(t, label.HostCount, 3)
+
+	labels, err = ds.ListLabelsForHost(ctx, host1.ID)
+	require.NoError(t, err)
+	require.Len(t, labels, 1)
+	require.Equal(t, "label1", labels[0].Name)
+
+	labels, err = ds.ListLabelsForHost(ctx, host2.ID)
+	require.NoError(t, err)
+	require.Len(t, labels, 1)
+	require.Equal(t, "label1", labels[0].Name)
+
+	labels, err = ds.ListLabelsForHost(ctx, host3.ID)
+	require.NoError(t, err)
+	require.Len(t, labels, 1)
+	require.Equal(t, "label1", labels[0].Name)
+
+	require.NoError(t, err)
+	require.Len(t, hostIDs, 3)
+	require.Equal(t, host1.ID, hostIDs[0])
+	// 2 and 3 have same name
+	require.Equal(t, host2.ID, hostIDs[1])
+	require.Equal(t, host3.ID, hostIDs[2])
+
+	labelSpec, err = ds.GetLabelSpec(ctx, label1.Name)
+	require.NoError(t, err)
+
+	// label.Hosts contains hostnames
+	require.Len(t, labelSpec.Hosts, 3)
+	require.Equal(t, host1.Hostname, labelSpec.Hosts[0])
+	require.Equal(t, host2.Hostname, labelSpec.Hosts[1])
+	require.Equal(t, host3.Hostname, labelSpec.Hosts[2])
 }

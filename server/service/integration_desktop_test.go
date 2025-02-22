@@ -7,11 +7,13 @@ import (
 	"net/http"
 	"time"
 
+	"github.com/fleetdm/fleet/v4/server/contexts/ctxerr"
 	"github.com/fleetdm/fleet/v4/server/datastore/mysql"
 	"github.com/fleetdm/fleet/v4/server/fleet"
 	"github.com/fleetdm/fleet/v4/server/ptr"
 	"github.com/google/uuid"
 	"github.com/jmoiron/sqlx"
+	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
 
@@ -22,19 +24,23 @@ func (s *integrationTestSuite) TestDeviceAuthenticatedEndpoints() {
 	ac, err := s.ds.AppConfig(context.Background())
 	require.NoError(t, err)
 	ac.OrgInfo.OrgLogoURL = "http://example.com/logo"
+	ac.OrgInfo.ContactURL = "http://example.com/contact"
+	ac.Features.EnableSoftwareInventory = true
 	err = s.ds.SaveAppConfig(context.Background(), ac)
 	require.NoError(t, err)
 
 	// create some mappings and MDM/Munki data
 	require.NoError(t, s.ds.ReplaceHostDeviceMapping(context.Background(), hosts[0].ID, []*fleet.HostDeviceMapping{
-		{HostID: hosts[0].ID, Email: "a@b.c", Source: "google_chrome_profiles"},
-		{HostID: hosts[0].ID, Email: "b@b.c", Source: "google_chrome_profiles"},
-	}))
-	require.NoError(t, s.ds.SetOrUpdateMDMData(context.Background(), hosts[0].ID, false, true, "url", false, ""))
+		{HostID: hosts[0].ID, Email: "a@b.c", Source: fleet.DeviceMappingGoogleChromeProfiles},
+		{HostID: hosts[0].ID, Email: "b@b.c", Source: fleet.DeviceMappingGoogleChromeProfiles},
+	}, fleet.DeviceMappingGoogleChromeProfiles))
+	_, err = s.ds.SetOrUpdateCustomHostDeviceMapping(context.Background(), hosts[0].ID, "c@b.c", fleet.DeviceMappingCustomInstaller)
+	require.NoError(t, err)
+	require.NoError(t, s.ds.SetOrUpdateMDMData(context.Background(), hosts[0].ID, false, true, "url", false, "", ""))
 	require.NoError(t, s.ds.SetOrUpdateMunkiInfo(context.Background(), hosts[0].ID, "1.3.0", nil, nil))
 	// create a battery for hosts[0]
 	require.NoError(t, s.ds.ReplaceHostBatteries(context.Background(), hosts[0].ID, []*fleet.HostBattery{
-		{HostID: hosts[0].ID, SerialNumber: "a", CycleCount: 1, Health: "Good"},
+		{HostID: hosts[0].ID, SerialNumber: "a", CycleCount: 1, Health: "Normal"},
 	}))
 
 	// create an auth token for hosts[0]
@@ -72,10 +78,12 @@ func (s *integrationTestSuite) TestDeviceAuthenticatedEndpoints() {
 	require.Equal(t, hosts[0].ID, getHostResp.Host.ID)
 	require.False(t, getHostResp.Host.RefetchRequested)
 	require.Equal(t, "http://example.com/logo", getHostResp.OrgLogoURL)
+	require.Equal(t, "http://example.com/contact", getHostResp.OrgContactURL)
 	require.Nil(t, getHostResp.Host.Policies)
 	require.NotNil(t, getHostResp.Host.Batteries)
 	require.Equal(t, &fleet.HostBattery{CycleCount: 1, Health: "Normal"}, (*getHostResp.Host.Batteries)[0])
 	require.True(t, getHostResp.GlobalConfig.MDM.EnabledAndConfigured)
+	require.True(t, getHostResp.GlobalConfig.Features.EnableSoftwareInventory)
 	hostDevResp := getHostResp.Host
 
 	// make request for same host on the host details API endpoint,
@@ -107,7 +115,12 @@ func (s *integrationTestSuite) TestDeviceAuthenticatedEndpoints() {
 	require.NoError(t, json.NewDecoder(res.Body).Decode(&listDMResp))
 	require.NoError(t, res.Body.Close())
 	require.Equal(t, hosts[0].ID, listDMResp.HostID)
-	require.Len(t, listDMResp.DeviceMapping, 2)
+	require.Len(t, listDMResp.DeviceMapping, 3)
+	require.ElementsMatch(t, listDMResp.DeviceMapping, []*fleet.HostDeviceMapping{
+		{Email: "a@b.c", Source: fleet.DeviceMappingGoogleChromeProfiles},
+		{Email: "b@b.c", Source: fleet.DeviceMappingGoogleChromeProfiles},
+		{Email: "c@b.c", Source: fleet.DeviceMappingCustomReplacement},
+	})
 	devDMs := listDMResp.DeviceMapping
 
 	// compare response with standard list device mapping API for that same host
@@ -225,12 +238,207 @@ func (s *integrationTestSuite) TestDefaultTransparencyURL() {
 	require.Equal(t, fleet.DefaultTransparencyURL, rawResp.Header.Get("Location"))
 }
 
-func (s *integrationTestSuite) TestDesktopRateLimit() {
+func (s *integrationTestSuite) TestRateLimitOfEndpoints() {
 	headers := map[string]string{
 		"X-Forwarded-For": "1.2.3.4",
 	}
-	for i := 0; i < desktopRateLimitMaxBurst+1; i++ { // rate limiting off-by-one
-		s.DoRawWithHeaders("GET", "/api/latest/fleet/device/"+uuid.NewString(), nil, http.StatusUnauthorized, headers).Body.Close()
+
+	testCases := []struct {
+		endpoint string
+		verb     string
+		payload  interface{}
+		burst    int
+		status   int
+	}{
+		{
+			endpoint: "/api/latest/fleet/forgot_password",
+			verb:     "POST",
+			payload:  forgotPasswordRequest{Email: "some@one.com"},
+			burst:    forgotPasswordRateLimitMaxBurst - 1,
+			status:   http.StatusAccepted,
+		},
+		{
+			endpoint: "/api/latest/fleet/device/" + uuid.NewString(),
+			verb:     "GET",
+			burst:    desktopRateLimitMaxBurst + 1,
+			status:   http.StatusUnauthorized,
+		},
 	}
-	s.DoRawWithHeaders("GET", "/api/latest/fleet/device/"+uuid.NewString(), nil, http.StatusTooManyRequests, headers).Body.Close()
+
+	for _, tCase := range testCases {
+		b, err := json.Marshal(tCase.payload)
+		require.NoError(s.T(), err)
+
+		for i := 0; i < tCase.burst; i++ {
+			s.DoRawWithHeaders(tCase.verb, tCase.endpoint, b, tCase.status, headers).Body.Close()
+		}
+		s.DoRawWithHeaders(tCase.verb, tCase.endpoint, b, http.StatusTooManyRequests, headers).Body.Close()
+	}
+}
+
+func (s *integrationTestSuite) TestErrorReporting() {
+	t := s.T()
+
+	hosts := s.createHosts(t)
+	token := "much_valid"
+	mysql.ExecAdhocSQL(t, s.ds, func(db sqlx.ExtContext) error {
+		_, err := db.ExecContext(context.Background(), `INSERT INTO host_device_auth (host_id, token) VALUES (?, ?)`, hosts[0].ID, token)
+		return err
+	})
+
+	// invalid token is unauthorized
+	res := s.DoRawNoAuth("POST", "/api/latest/fleet/device/no_such_token/debug/errors", []byte("{}"), http.StatusUnauthorized)
+	res.Body.Close()
+
+	// invalid request body is a bad request
+	res = s.DoRawNoAuth("POST", "/api/latest/fleet/device/"+token+"/debug/errors", []byte("{},{}"), http.StatusBadRequest)
+	res.Body.Close()
+
+	data := make(map[string]interface{})
+	for i := int64(0); i < (maxFleetdErrorReportSize+1024)/20; i++ {
+		key := fmt.Sprintf("key%d", i)
+		value := fmt.Sprintf("value%d", i)
+		data[key] = value
+	}
+
+	jsonData, err := json.Marshal(data)
+	require.NoError(t, err)
+	res = s.DoRawNoAuth("POST", "/api/latest/fleet/device/"+token+"/debug/errors", jsonData, http.StatusBadRequest)
+	res.Body.Close()
+
+	res = s.DoRawNoAuth("POST", "/api/latest/fleet/device/"+token+"/debug/errors", []byte("{}"), http.StatusOK)
+	res.Body.Close()
+
+	// Clear errors in error store
+	s.Do("GET", "/debug/errors", nil, http.StatusOK, "flush", "true")
+
+	testTime, err := time.Parse(time.RFC3339, "1969-06-19T21:44:05Z")
+	require.NoError(t, err)
+	ferr := fleet.FleetdError{
+		Vital:               true,
+		ErrorSource:         "orbit",
+		ErrorSourceVersion:  "1.1.1",
+		ErrorTimestamp:      testTime,
+		ErrorMessage:        "test message",
+		ErrorAdditionalInfo: map[string]any{"foo": "bar"},
+	}
+	errBytes, err := json.Marshal(ferr)
+	require.NoError(t, err)
+	res = s.DoRawNoAuth("POST", "/api/latest/fleet/device/"+token+"/debug/errors", errBytes, http.StatusOK)
+	res.Body.Close()
+	time.Sleep(100 * time.Millisecond) // give time for the error to be saved
+
+	// Check that error was logged.
+	var errors []map[string]interface{}
+	s.DoJSON("GET", "/debug/errors", nil, http.StatusOK, &errors)
+	require.Len(t, errors, 1)
+	expectedCount := 1
+
+	checkError := func(errorItem map[string]interface{}, expectedCount int) {
+		assert.EqualValues(t, expectedCount, errorItem["count"])
+		errChain, ok := errorItem["chain"].([]interface{})
+		require.True(t, ok, fmt.Sprintf("%T", errorItem["chain"]))
+		require.Len(t, errChain, 2)
+		errChain0, ok := errChain[0].(map[string]interface{})
+		require.True(t, ok, fmt.Sprintf("%T", errChain[0]))
+		assert.EqualValues(t, "test message", errChain0["message"])
+		errChain1, ok := errChain[1].(map[string]interface{})
+		require.True(t, ok, fmt.Sprintf("%T", errChain[1]))
+
+		// Check that the exact fleetd error can be retrieved.
+		b, err := json.Marshal(errChain1["data"])
+		require.NoError(t, err)
+		var receivedErr fleet.FleetdError
+		require.NoError(t, json.Unmarshal(b, &receivedErr))
+		assert.EqualValues(t, ferr, receivedErr)
+	}
+	checkError(errors[0], expectedCount)
+
+	// Make sure metadata is present when error is aggregated.
+	srvCtx := s.server.Config.BaseContext(nil)
+	aggRaw, err := ctxerr.Aggregate(srvCtx)
+	require.NoError(t, err)
+	var errorAgg []ctxerr.ErrorAgg
+	require.NoError(t, json.Unmarshal(aggRaw, &errorAgg))
+	require.Len(t, errorAgg, 1)
+	assert.EqualValues(t, expectedCount, errorAgg[0].Count)
+	var receivedErr fleet.FleetdError
+	require.NoError(t, json.Unmarshal(errorAgg[0].Metadata, &receivedErr))
+	assert.EqualValues(t, ferr.ErrorSource, receivedErr.ErrorSource)
+	assert.EqualValues(t, ferr.ErrorSourceVersion, receivedErr.ErrorSourceVersion)
+	assert.EqualValues(t, ferr.ErrorMessage, receivedErr.ErrorMessage)
+	assert.EqualValues(t, ferr.ErrorAdditionalInfo, receivedErr.ErrorAdditionalInfo)
+	assert.NotEqual(t, ferr.ErrorTimestamp, receivedErr.ErrorTimestamp) // not included
+
+	// Sending error again should increment the count.
+	res = s.DoRawNoAuth("POST", "/api/latest/fleet/device/"+token+"/debug/errors", errBytes, http.StatusOK)
+	res.Body.Close()
+	expectedCount++
+
+	// Changing the timestamp should only increment the count.
+	testTime2, err := time.Parse(time.RFC3339, "2024-10-30T09:44:05Z")
+	require.NoError(t, err)
+	ferr = fleet.FleetdError{
+		Vital:               true,
+		ErrorSource:         "orbit",
+		ErrorSourceVersion:  "1.1.1",
+		ErrorTimestamp:      testTime2,
+		ErrorMessage:        "test message",
+		ErrorAdditionalInfo: map[string]any{"foo": "bar"},
+	}
+	errBytes, err = json.Marshal(ferr)
+	require.NoError(t, err)
+	res = s.DoRawNoAuth("POST", "/api/latest/fleet/device/"+token+"/debug/errors", errBytes, http.StatusOK)
+	res.Body.Close()
+	expectedCount++
+	time.Sleep(100 * time.Millisecond) // give time for the error(s) to be saved
+
+	// Check that error was logged.
+	s.DoJSON("GET", "/debug/errors", nil, http.StatusOK, &errors)
+	require.Len(t, errors, 1)
+	checkError(errors[0], expectedCount)
+
+	// Changing vital flag should NOT create a new error, but will overwrite the existing one.
+	ferr = fleet.FleetdError{
+		Vital:               false,
+		ErrorSource:         "orbit",
+		ErrorSourceVersion:  "1.1.1",
+		ErrorTimestamp:      testTime,
+		ErrorMessage:        "test message",
+		ErrorAdditionalInfo: map[string]any{"foo": "bar"},
+	}
+	errBytes, err = json.Marshal(ferr)
+	require.NoError(t, err)
+	res = s.DoRawNoAuth("POST", "/api/latest/fleet/device/"+token+"/debug/errors", errBytes, http.StatusOK)
+	res.Body.Close()
+	expectedCount++
+	time.Sleep(100 * time.Millisecond) // give time for the error(s) to be saved
+
+	aggRaw, err = ctxerr.Aggregate(srvCtx)
+	require.NoError(t, err)
+	errorAgg = nil
+	require.NoError(t, json.Unmarshal(aggRaw, &errorAgg))
+	require.Len(t, errorAgg, 1)
+	assert.EqualValues(t, expectedCount, errorAgg[0].Count)
+	// Since the error is not vital, the metadata should be empty.
+	assert.Empty(t, string(errorAgg[0].Metadata))
+
+	// Changing additional info should create a new error
+	ferr = fleet.FleetdError{
+		Vital:               true,
+		ErrorSource:         "orbit",
+		ErrorSourceVersion:  "1.1.1",
+		ErrorTimestamp:      testTime,
+		ErrorMessage:        "test message",
+		ErrorAdditionalInfo: map[string]any{"foo": "bar2"},
+	}
+	errBytes, err = json.Marshal(ferr)
+	require.NoError(t, err)
+	res = s.DoRawNoAuth("POST", "/api/latest/fleet/device/"+token+"/debug/errors", errBytes, http.StatusOK)
+	res.Body.Close()
+	time.Sleep(100 * time.Millisecond) // give time for the error(s) to be saved
+
+	s.DoJSON("GET", "/debug/errors", nil, http.StatusOK, &errors)
+	require.Len(t, errors, 2)
+
 }

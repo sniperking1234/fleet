@@ -5,23 +5,27 @@ import { IHostEncrpytionKeyResponse } from "interfaces/host";
 import hostAPI from "services/entities/hosts";
 
 import Modal from "components/Modal";
-import CustomLink from "components/CustomLink";
 import Button from "components/buttons/Button";
 import InputFieldHiddenContent from "components/forms/fields/InputFieldHiddenContent";
 import DataError from "components/DataError";
+import CustomLink from "components/CustomLink";
+import { LEARN_MORE_ABOUT_BASE_LINK } from "utilities/constants";
+import { HostPlatform } from "interfaces/platform";
 
 const baseClass = "disk-encryption-key-modal";
 
 interface IDiskEncryptionKeyModal {
+  platform: HostPlatform;
   hostId: number;
   onCancel: () => void;
 }
 
 const DiskEncryptionKeyModal = ({
+  platform,
   hostId,
   onCancel,
 }: IDiskEncryptionKeyModal) => {
-  const { data: encrpytionKey, error: encryptionKeyError } = useQuery<
+  const { data: encryptionKey, error: encryptionKeyError } = useQuery<
     IHostEncrpytionKeyResponse,
     unknown,
     string
@@ -33,23 +37,29 @@ const DiskEncryptionKeyModal = ({
     select: (data) => data.encryption_key.key,
   });
 
+  const recoveryText =
+    platform === "darwin"
+      ? "Use this key to log in to the host if you forgot the password."
+      : "Use this key to unlock the encrypted drive.";
+
   return (
-    <Modal title="Disk encryption key" onExit={onCancel} className={baseClass}>
+    <Modal
+      title="Disk encryption key"
+      onExit={onCancel}
+      onEnter={onCancel}
+      className={baseClass}
+    >
       {encryptionKeyError ? (
         <DataError />
       ) : (
         <>
-          <InputFieldHiddenContent value={encrpytionKey ?? ""} />
+          <InputFieldHiddenContent value={encryptionKey ?? ""} />
           <p>
-            The disk encryption key refers to the FileVault recovery key for
-            macOS.
-          </p>
-          <p>
-            Use this key to log in to the host if you forgot the password.{" "}
+            {recoveryText}{" "}
             <CustomLink
-              text="View recovery instructions"
-              url="https://fleetdm.com/docs/using-fleet/mdm-disk-encryption#reset-a-macos-hosts-password-using-the-disk-encryption-key"
               newTab
+              url={`${LEARN_MORE_ABOUT_BASE_LINK}/mdm-disk-encryption`}
+              text="Learn more"
             />
           </p>
           <div className="modal-cta-wrap">

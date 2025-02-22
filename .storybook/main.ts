@@ -52,7 +52,8 @@ const config: StorybookConfig = {
     "@storybook/addon-mdx-gfm",
     "@storybook/addon-a11y",
     "@storybook/test-runner",
-    "storybook-addon-designs",
+    "@storybook/addon-designs",
+    "@storybook/addon-webpack5-compiler-babel"
   ],
   typescript: {
     check: false,
@@ -68,9 +69,7 @@ const config: StorybookConfig = {
     name: "@storybook/react-webpack5",
     options: {},
   },
-  docs: {
-    autodocs: true,
-  },
+  docs: {},
 };
 
 export default config;

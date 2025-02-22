@@ -1,12 +1,10 @@
-# Deploy Fleet on Hetzner Cloud with cloud-init and Docker
+# Deploy Fleet on Hetzner Cloud
 
-![Fleet + Hetzner](../website/assets/images/articles/deploying-fleet-on-hetzner-1600x900@2x.jpg)
+> **Archived.** While still usable, this guide has not been updated recently. See the [Deploy Fleet](https://fleetdm.com/docs/deploy/deploy-fleet) docs for supported deployment methods.
 
-[Hetzner](https://hetzner.com) is a great price-performance provider for “root” (dedicated) and Virtual Private Servers (VPS) with high performance and generous bandwidth.
+![Deploy Fleet on Hetzner Cloud](../website/assets/images/articles/deploy-fleet-on-hetzner-cloud-800x450@2x.png)
 
-While other providers may charge large amounts for computing and storage, Hetzner is cost-effective _and_ scalable, with great managed options (such as [Nextcloud](https://www.hetzner.com/storage/storage-share)).
-
-Let’s explore how you might deploy Fleet on [Hetzner Cloud](https://hetzner.com/cloud) as quickly as possible so you can use Fleet to orchestrate osquery on your endpoints.
+Learn how to deploy Fleet on Hetzner Cloud using cloud-init and Docker. [Hetzner](https://hetzner.com) is a great price-performance provider for “root” (dedicated) and Virtual Private Servers (VPS), offering high performance and generous bandwidth.
 
 ## The 2 minute setup
 
@@ -71,14 +69,14 @@ echo "deb [arch=$(dpkg --print-architecture) signed-by=/usr/share/keyrings/docke
 apt update
 apt install -y docker-ce docker-ce-cli containerd.io docker-compose-plugin
 
-docker pull mysql@sha256:16e159331007eccc069822f7b731272043ed572a79a196a05ffa2ea127caaf67 # mysql:5.7.38 as of 2022/05/19
+docker pull mysql@sha256:134e2d1c7c517d05e5328a77aa5a165a314dc4c4116503e7e089494f4e398ab1 # mysql:8.0.36 as of 2024/07/04
 
 ######################
 # MySQL (dockerized) #
 ######################
 
-# mysql:5.7.38 as of 2022/05/19
-docker pull mysql@sha256:16e159331007eccc069822f7b731272043ed572a79a196a05ffa2ea127caaf67
+# mysql:8.0.36 as of 2024/07/04
+docker pull mysql@sha256:134e2d1c7c517d05e5328a77aa5a165a314dc4c4116503e7e089494f4e398ab1
 
 # Create the Fleet MySQL data folder
 mkdir -p /etc/fleet
@@ -104,14 +102,14 @@ Restart=always
 
 ExecStartPre=-/usr/bin/docker exec %n stop
 ExecStartPre=-/usr/bin/docker rm %n
-ExecStartPre=-/usr/bin/docker pull mysql@sha256:16e159331007eccc069822f7b731272043ed572a79a196a05ffa2ea127caaf67
+ExecStartPre=-/usr/bin/docker pull mysql@sha256:134e2d1c7c517d05e5328a77aa5a165a314dc4c4116503e7e089494f4e398ab1
 
 ExecStart=/usr/bin/docker run --rm \
     --name %n \
     -p 127.0.0.1:3306:3306 \
     -v /etc/fleet/mysql:/var/lib/mysql \
     --env-file /etc/fleet/mysql.env \
-    mysql@sha256:16e159331007eccc069822f7b731272043ed572a79a196a05ffa2ea127caaf67
+    mysql@sha256:134e2d1c7c517d05e5328a77aa5a165a314dc4c4116503e7e089494f4e398ab1
 
 ExecStop=/usr/bin/docker stop %n
 
@@ -350,7 +348,7 @@ To follow this guide, you’ll need:
 
 First, purchase a machine (for example, a [Hetzner Cloud](https://hetzner.com/cloud) instance):
 
-![Hetzner cloud purchase machine screen](../website/assets/images/articles/deploy-fleet-on-hetzner-cloud-1-932x388%402x.png)
+![Hetzner cloud purchase machine screen](../website/assets/images/articles/deploy-fleet-on-hetzner-cloud-1-932x388@2x.png)
 _Hetzner cloud purchase machine screen_
 
 After purchasing, you should know the IP address of your machine (and make sure you set up things like SSH [securely](https://community.hetzner.com/tutorials/securing-ssh)!)
@@ -367,7 +365,7 @@ This would be a great time to set up `A`/`AAAA` records for your Fleet controlle
 
 Now that we have our machine, we’ll want to allow DNS queries to DNS resolvers other than Hetzner:
 
-```
+```sh
 sed -i /etc/systemd/resolved.conf 's/^#DNS=$/DNS=1.1.1.1 9.9.9.9 8.8.8.8/'
 systemctl restart systemd-resolved
 ```
@@ -378,7 +376,7 @@ This will ensure that external DNS can be reached through a means _other_ than b
 
 Let’s get our machine up to date and install some packages we’ll need later
 
-```
+```sh
 # Update Apt
 sudo apt update
 sudo apt install -y ca-certificates curl gnupg lsb-release
@@ -388,7 +386,7 @@ sudo apt install -y ca-certificates curl gnupg lsb-release
 
 To ensure we do not expose services accidentally, we'll install [UncomplicatedFirewall](https://wiki.ubuntu.com/UncomplicatedFirewall), also known as ufw, to block all inbound traffic by default and then allow the protocols we need.
 
-```
+```sh
 apt install ufw
 ufw deny all
 
@@ -406,7 +404,7 @@ ufw enable
 Before we can get started, let’s install [Docker](https://docs.docker.com/) to manage our workloads. Other container runtimes would work, but Docker is pretty well known, robust, and uses [Containerd](https://containerd.io) underneath anyway, so let’s use that:
 
 
-```
+```sh
 sudo apt install -y ca-certificates curl gnupg lsb-release # these should already be installed
 
 # Set up package repositories for docker
@@ -436,8 +434,8 @@ To run MySQL, we’ll have to do the following:
 
 We can pull the [official MySQL docker image](https://hub.docker.com/_/mysql) like so:
 
-```
-$ docker pull mysql@sha256:16e159331007eccc069822f7b731272043ed572a79a196a05ffa2ea127caaf67 # mysql:5.7.38 as of 2022/05/19
+```sh
+$ docker pull mysql@sha256:134e2d1c7c517d05e5328a77aa5a165a314dc4c4116503e7e089494f4e398ab1 # mysql:8.0.36 as of 2024/07/04
 ```
 
 ### Create & enable a systemd unit for MySQL
@@ -446,7 +444,7 @@ $ docker pull mysql@sha256:16e159331007eccc069822f7b731272043ed572a79a196a05ffa2
 
 First we’ll set up our credentials:
 
-```
+```sh
 # Create the Fleet MySQL data folder
 mkdir -p /etc/fleet
 
@@ -462,7 +460,7 @@ cat /dev/urandom | tr -dc 'a-zA-Z0-9' | fold -w 32 | head -n 1 | sed -e 's/^/MYS
 
 And then we’ll create the actual unit that reads this config
 
-```
+```systemd
 [Unit]
 Description=Fleet MySQL instance
 After=docker.service
@@ -474,14 +472,14 @@ Restart=always
 
 ExecStartPre=-/usr/bin/docker exec %n stop
 ExecStartPre=-/usr/bin/docker rm %n
-ExecStartPre=-/usr/bin/docker pull mysql@sha256:16e159331007eccc069822f7b731272043ed572a79a196a05ffa2ea127caaf67
+ExecStartPre=-/usr/bin/docker pull mysql@sha256:134e2d1c7c517d05e5328a77aa5a165a314dc4c4116503e7e089494f4e398ab1
 
 ExecStart=/usr/bin/docker run --rm \
     --name %n \
     -p 127.0.0.1:3306:3306 \
     -v /etc/fleet/mysql:/var/lib/mysql \
     --env-file /etc/fleet/mysql.env \
-    mysql@sha256:16e159331007eccc069822f7b731272043ed572a79a196a05ffa2ea127caaf67
+    mysql@sha256:134e2d1c7c517d05e5328a77aa5a165a314dc4c4116503e7e089494f4e398ab1
 
 ExecStop=/usr/bin/docker stop %n
 
@@ -491,7 +489,7 @@ WantedBy=default.target
 
 We’ll save this content to `/etc/systemd/system/fleet-mysql.service`, and refresh `systemd`:
 
-```
+```sh
 $ systemctl daemon-reload
 $ systemctl enable fleet-mysql
 ```
@@ -506,7 +504,7 @@ Fleet uses [Redis](https://redis.io/) as its primary caching solution, so we’l
 
 We can pull the [KeyDB docker image](https://hub.docker.com/r/eqalpha/keydb) like so:
 
-```
+```sh
 $ docker pull eqalpha/keydb@sha256:18a00f69577105650d829ef44a9716eb4feaa7a5a2bfacd115f0a1e7a97a8726 # x86_64_v6.3.0 as of 2022/05/19
 ```
 
@@ -515,7 +513,7 @@ $ docker pull eqalpha/keydb@sha256:18a00f69577105650d829ef44a9716eb4feaa7a5a2bfa
 Similarly to MySQL, a systemd service can be created for our redis-equivalent service as well.
 
 
-```
+```systemd
 [Unit]
 Description=Fleet Redis instance
 After=docker.service
@@ -543,7 +541,7 @@ WantedBy=default.target
 
 We’ll save this content to `/etc/systemd/system/fleet-redis.service`. And just like MySQL we’ll `daemon-reload` and `enable`:
 
-```
+```sh
 systemctl daemon-reload
 systemctl enable fleet-redis
 ```
@@ -558,7 +556,7 @@ We’re finally at the main course – time to install Fleet!
 
 We can pull the [Fleet docker image](https://hub.docker.com/r/fleetdm/fleet) like so:
 
-```
+```sh
 $ docker pull fleetdm/fleet@sha256:332744f3503dc15fdb65c7b672a09349b2c30fb59a08f9ab4b1bbab94e3ddb5b
 ```
 
@@ -568,7 +566,7 @@ The [Fleet v4.15.0](https://github.com/fleetdm/fleet/releases/tag/fleet-v4.15.0)
 
 First, we’ll get our Fleet ENV vars in place:
 
-```
+```sh
 mkdir -p /etc/fleet/fleet
 
 # MySQL fleet ENV
@@ -585,7 +583,7 @@ echo 'FLEET_SERVER_TLS=false' >> /etc/fleet/fleet.env
 
 We can set up Fleet to run like so:
 
-```
+```systemd
 [Unit]
 Description=Fleet
 After=docker.service
@@ -626,7 +624,7 @@ Luckily, Caddy supports automatic HTTPS certificate retrieval via [LetsEncrypt](
 
 First, let’s write our domain as a configuration that systemd can use at `/etc/fleet/caddy.env`:
 
-```
+```sh
 mkdir -p /etc/fleet/caddy;
 touch /etc/fleet/caddy.env;
 chmod 600 /etc/fleet/caddy.env;
@@ -643,13 +641,13 @@ reverse_proxy 127.0.0.1:8080
 
 After saving that simple `Caddyfile` at `/etc/fleet/caddy/Caddyfile`, we can do our usual `docker pull`ing:
 
-```
+```sh
 $ docker pull caddy@sha256:6e62b63d4d7a4826f9e93c904a0e5b886a8bea2234b6569e300924282a2e8e6c
 ```
 
 Here’s a systemd service:
 
-```
+```systemd
 [Unit]
 Description=Fleet Caddy instance
 After=docker.service
@@ -707,9 +705,11 @@ Now that you’re ready to use Fleet and have a host installed. Here's some next
 - Import Fleet's [standard query library](https://fleetdm.com/docs/using-fleet/standard-query-library) to start asking questions about your hosts.
 - To run a more secure setup, consider creating a dedicated `fleet` user with Docker's support for user [namespaces](https://docs.docker.com/engine/security/userns-remap/). 
 
-<meta name="category" value="deploy">
+
+<meta name="articleTitle" value="Deploy Fleet on Hetzner Cloud">
 <meta name="authorGitHubUsername" value="ksatter">
 <meta name="authorFullName" value="Kathy Satterlee">
 <meta name="publishedOn" value="2022-06-27">
-<meta name="articleTitle" value="Deploy Fleet on Hetzner Cloud with cloud-init and Docker">
-<meta name="articleImageUrl" value="../website/assets/images/articles/deploying-fleet-on-hetzner-1600x900@2x.jpg">
+<meta name="category" value="guides">
+<meta name="articleImageUrl" value="../website/assets/images/articles/deploy-fleet-on-hetzner-cloud-800x450@2x.png">
+<meta name="description" value="Learn how to deploy Fleet on Hetzner Cloud using cloud-init and Docker.">

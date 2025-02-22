@@ -14,12 +14,16 @@ import {
   IStoredPolicyResponse,
 } from "interfaces/policy";
 import { ITarget } from "interfaces/target";
-import { ITeam } from "interfaces/team";
+import {
+  API_ALL_TEAMS_ID,
+  APP_CONTEXT_ALL_TEAMS_ID,
+  ITeam,
+} from "interfaces/team";
 import globalPoliciesAPI from "services/entities/global_policies";
 import teamPoliciesAPI from "services/entities/team_policies";
 import hostAPI from "services/entities/hosts";
 import statusAPI from "services/entities/status";
-import { QUERIES_PAGE_STEPS } from "utilities/constants";
+import { DOCUMENT_TITLE_SUFFIX, LIVE_POLICY_STEPS } from "utilities/constants";
 
 import QuerySidePanel from "components/side_panels/QuerySidePanel";
 import QueryEditor from "pages/policies/PolicyPage/screens/QueryEditor";
@@ -52,9 +56,11 @@ const PolicyPage = ({
   const policyId = paramsPolicyId ? parseInt(paramsPolicyId, 10) : null; // TODO(sarah): What should happen if this doesn't parse (e.g. the string is "foo")?
   const handlePageError = useErrorHandler();
   const {
+    isOnGlobalTeam,
     isGlobalAdmin,
     isGlobalMaintainer,
     isAnyTeamMaintainerOrTeamAdmin,
+    config,
   } = useContext(AppContext);
   const {
     lastEditedQueryBody,
@@ -77,11 +83,12 @@ const PolicyPage = ({
     isTeamMaintainer,
     isTeamObserver,
     teamIdForApi,
+    isObserverPlus,
   } = useTeamIdParam({
     location,
     router,
     includeAllTeams: true,
-    includeNoTeam: false,
+    includeNoTeam: true,
     permittedAccessByTeamRole: {
       admin: true,
       maintainer: true,
@@ -109,7 +116,11 @@ const PolicyPage = ({
       return;
     }
     if (policyTeamId !== teamIdForApi) {
-      setPolicyTeamId(teamIdForApi || 0);
+      setPolicyTeamId(
+        teamIdForApi === API_ALL_TEAMS_ID
+          ? APP_CONTEXT_ALL_TEAMS_ID
+          : teamIdForApi
+      );
     }
   }, [isRouteOk, teamIdForApi, policyTeamId, setPolicyTeamId]);
 
@@ -127,7 +138,7 @@ const PolicyPage = ({
     };
   }, []);
 
-  const [step, setStep] = useState(QUERIES_PAGE_STEPS[1]);
+  const [step, setStep] = useState(LIVE_POLICY_STEPS[1]);
   const [selectedTargets, setSelectedTargets] = useState<ITarget[]>([]);
   const [targetedHosts, setTargetedHosts] = useState<IHost[]>([]);
   const [targetedLabels, setTargetedLabels] = useState<ILabel[]>([]);
@@ -145,13 +156,15 @@ const PolicyPage = ({
     error: storedPolicyError,
   } = useQuery<IStoredPolicyResponse, Error, IPolicy>(
     ["policy", policyId],
-    () => globalPoliciesAPI.load(policyId as number), // Note: Team members have access to policies through global API
+    () => globalPoliciesAPI.load(policyId as number), // Note: Team users have access to policies through global API
     {
       enabled: isRouteOk && !!policyId, // Note: this justifies the number type assertions above
       refetchOnWindowFocus: false,
       retry: false,
       select: (data: IStoredPolicyResponse) => data.policy,
       onSuccess: (returnedQuery) => {
+        const deNulledReturnedQueryTeamId = returnedQuery.team_id ?? undefined;
+
         setLastEditedQueryId(returnedQuery.id);
         setLastEditedQueryName(returnedQuery.name);
         setLastEditedQueryDescription(returnedQuery.description);
@@ -161,7 +174,11 @@ const PolicyPage = ({
         setLastEditedQueryPlatform(returnedQuery.platform);
         // TODO(sarah): What happens if the team id in the policy response doesn't match the
         // url param? In theory, the backend should ensure this doesn't happen.
-        setPolicyTeamId(returnedQuery.team_id || 0);
+        setPolicyTeamId(
+          deNulledReturnedQueryTeamId === API_ALL_TEAMS_ID
+            ? APP_CONTEXT_ALL_TEAMS_ID
+            : deNulledReturnedQueryTeamId
+        );
       },
       onError: (error) => handlePageError(error),
     }
@@ -184,9 +201,28 @@ const PolicyPage = ({
     }
   );
 
+  /** Pesky bug affecting team level users:
+   - Navigating to policies/:id immediately defaults the user to the first team they're on
+  with the most permissions, in the URL bar because of useTeamIdParam
+  even if the policies/:id entity has a team attached to it
+  Hacky fix:
+   - Push entity's team id to url for team level users
+  */
+  if (
+    !isOnGlobalTeam &&
+    !isStoredPolicyLoading &&
+    storedPolicy?.team_id !== undefined &&
+    !(storedPolicy?.team_id?.toString() === location.query.team_id)
+  ) {
+    router.push(
+      `${location.pathname}?team_id=${storedPolicy?.team_id?.toString()}`
+    );
+  }
+
+  // this function is passed way down, wrapped and ultimately called by SaveNewPolicyModal
   const { mutateAsync: createPolicy } = useMutation(
     (formData: IPolicyFormData) => {
-      return formData.team_id
+      return formData.team_id !== undefined
         ? teamPoliciesAPI.create(formData)
         : globalPoliciesAPI.create(formData);
     }
@@ -201,6 +237,16 @@ const PolicyPage = ({
   useEffect(() => {
     detectIsFleetQueryRunnable();
   }, []);
+
+  // Updates title that shows up on browser tabs
+  useEffect(() => {
+    // e.g., Antivirus healthy (Linux) | Policies | Fleet
+    if (storedPolicy?.name) {
+      document.title = `${storedPolicy.name} | Policies | ${DOCUMENT_TITLE_SUFFIX}`;
+    } else {
+      document.title = `Policies | ${DOCUMENT_TITLE_SUFFIX}`;
+    }
+  }, [location.pathname, storedPolicy?.name]);
 
   useEffect(() => {
     setShowOpenSchemaActionText(!isSidebarOpen);
@@ -219,7 +265,7 @@ const PolicyPage = ({
   };
 
   const renderLiveQueryWarning = (): JSX.Element | null => {
-    if (isLiveQueryRunnable) {
+    if (isLiveQueryRunnable || config?.server_settings.live_query_disabled) {
       return null;
     }
 
@@ -251,10 +297,11 @@ const PolicyPage = ({
       isTeamAdmin,
       isTeamMaintainer,
       isTeamObserver,
+      isObserverPlus,
       storedPolicyError,
       createPolicy,
       onOsqueryTableSelect,
-      goToSelectTargets: () => setStep(QUERIES_PAGE_STEPS[2]),
+      goToSelectTargets: () => setStep(LIVE_POLICY_STEPS[2]),
       onOpenSchemaSidebar,
       renderLiveQueryWarning,
     };
@@ -266,34 +313,35 @@ const PolicyPage = ({
       targetedLabels,
       targetedTeams,
       targetsTotalCount,
-      goToQueryEditor: () => setStep(QUERIES_PAGE_STEPS[1]),
-      goToRunQuery: () => setStep(QUERIES_PAGE_STEPS[3]),
+      goToQueryEditor: () => setStep(LIVE_POLICY_STEPS[1]),
+      goToRunQuery: () => setStep(LIVE_POLICY_STEPS[3]),
       setSelectedTargets,
       setTargetedHosts,
       setTargetedLabels,
       setTargetedTeams,
       setTargetsTotalCount,
+      isLivePolicy: true,
     };
 
     const step3Opts = {
       selectedTargets,
       storedPolicy,
       setSelectedTargets,
-      goToQueryEditor: () => setStep(QUERIES_PAGE_STEPS[1]),
+      goToQueryEditor: () => setStep(LIVE_POLICY_STEPS[1]),
       targetsTotalCount,
     };
 
     switch (step) {
-      case QUERIES_PAGE_STEPS[2]:
+      case LIVE_POLICY_STEPS[2]:
         return <SelectTargets {...step2Opts} />;
-      case QUERIES_PAGE_STEPS[3]:
+      case LIVE_POLICY_STEPS[3]:
         return <RunQuery {...step3Opts} />;
       default:
         return <QueryEditor {...step1Opts} />;
     }
   };
 
-  const isFirstStep = step === QUERIES_PAGE_STEPS[1];
+  const isFirstStep = step === LIVE_POLICY_STEPS[1];
   const showSidebar =
     isFirstStep &&
     isSidebarOpen &&

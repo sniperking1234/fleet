@@ -5,12 +5,13 @@ import classnames from "classnames";
 import { IAceEditor } from "react-ace/lib/types";
 import { noop } from "lodash";
 
-import FleetAce from "components/FleetAce";
+import SQLEditor from "components/SQLEditor";
 import CustomLink from "components/CustomLink";
 
 interface IFleetMarkdownProps {
   markdown: string;
   className?: string;
+  name?: string;
 }
 
 const baseClass = "fleet-markdown";
@@ -18,7 +19,7 @@ const baseClass = "fleet-markdown";
 /** This will give us sensible defaults for how we render markdown across the fleet application.
  * NOTE: can be extended later to take custom components, but dont need that at the moment.
  */
-const FleetMarkdown = ({ markdown, className }: IFleetMarkdownProps) => {
+const FleetMarkdown = ({ markdown, className, name }: IFleetMarkdownProps) => {
   const classNames = classnames(baseClass, className);
 
   return (
@@ -32,7 +33,7 @@ const FleetMarkdown = ({ markdown, className }: IFleetMarkdownProps) => {
           return <CustomLink text={String(children)} url={href} newTab />;
         },
 
-        // Overrides code display to use FleetAce with Readonly overrides.
+        // Overrides code display to use SQLEditor with Readonly overrides.
         code: ({ inline, children, ...props }) => {
           const onEditorBlur = (editor?: IAceEditor) => {
             editor && editor.clearSelection();
@@ -56,7 +57,7 @@ const FleetMarkdown = ({ markdown, className }: IFleetMarkdownProps) => {
           // full code blocks we want to use Fleet Ace.
           // e.g. ```SELECT * FROM USERS```
           return (
-            <FleetAce
+            <SQLEditor
               wrapperClassName={`${baseClass}__ace-display`}
               value={String(children).replace(/\n/, "")}
               showGutter={false}
@@ -65,6 +66,7 @@ const FleetMarkdown = ({ markdown, className }: IFleetMarkdownProps) => {
               style={{ border: "none" }}
               wrapEnabled
               readOnly
+              name={name}
             />
           );
         },

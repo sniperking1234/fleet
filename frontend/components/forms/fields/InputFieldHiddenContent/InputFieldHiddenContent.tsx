@@ -46,21 +46,21 @@ const InputFieldHiddenContent = ({
     return false;
   };
 
-  const renderLabel = () => {
+  const renderCopyShowButtons = () => {
     return (
-      <span className={`${baseClass}__name`}>
-        <span className="buttons">
-          {copyMessage && (
-            <span
-              className={`${baseClass}__copy-message`}
-            >{`${copyMessage} `}</span>
-          )}
+      <div className={`${baseClass}__action-overlay`}>
+        {copyMessage && (
+          <div
+            className={`${baseClass}__copy-message`}
+          >{`${copyMessage} `}</div>
+        )}
+        <div className={`${baseClass}__input-buttons`}>
           <Button
             variant="unstyled"
             className={`${baseClass}__copy-secret-icon`}
             onClick={onCopySecret}
           >
-            <Icon name="clipboard" />
+            <Icon name="copy" />
           </Button>
           <Button
             variant="unstyled"
@@ -69,21 +69,21 @@ const InputFieldHiddenContent = ({
           >
             <Icon name="eye" />
           </Button>
-        </span>
-      </span>
+        </div>
+      </div>
     );
   };
 
   return (
     <div className={classNames}>
       <InputField
-        disabled
+        readOnly
         inputWrapperClass={`${baseClass}__secret-input`}
         name={name}
-        label={renderLabel()}
         type={showSecret ? "text" : "password"}
         value={value}
       />
+      {renderCopyShowButtons()}
     </div>
   );
 };

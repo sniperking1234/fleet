@@ -9,32 +9,41 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"sort"
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/WatchBeam/clock"
 	eeservice "github.com/fleetdm/fleet/v4/ee/server/service"
 	"github.com/fleetdm/fleet/v4/server/config"
+	"github.com/fleetdm/fleet/v4/server/contexts/ctxerr"
 	"github.com/fleetdm/fleet/v4/server/contexts/license"
+	"github.com/fleetdm/fleet/v4/server/datastore/cached_mysql"
+	"github.com/fleetdm/fleet/v4/server/datastore/filesystem"
+	"github.com/fleetdm/fleet/v4/server/errorstore"
 	"github.com/fleetdm/fleet/v4/server/fleet"
 	"github.com/fleetdm/fleet/v4/server/logging"
 	"github.com/fleetdm/fleet/v4/server/mail"
 	apple_mdm "github.com/fleetdm/fleet/v4/server/mdm/apple"
+	microsoft_mdm "github.com/fleetdm/fleet/v4/server/mdm/microsoft"
+	nanodep_storage "github.com/fleetdm/fleet/v4/server/mdm/nanodep/storage"
+	"github.com/fleetdm/fleet/v4/server/mdm/nanomdm/mdm"
+	"github.com/fleetdm/fleet/v4/server/mdm/nanomdm/push"
+	nanomdm_push "github.com/fleetdm/fleet/v4/server/mdm/nanomdm/push"
+	scep_depot "github.com/fleetdm/fleet/v4/server/mdm/scep/depot"
 	nanodep_mock "github.com/fleetdm/fleet/v4/server/mock/nanodep"
 	"github.com/fleetdm/fleet/v4/server/ptr"
 	"github.com/fleetdm/fleet/v4/server/service/async"
 	"github.com/fleetdm/fleet/v4/server/service/mock"
+	"github.com/fleetdm/fleet/v4/server/service/redis_key_value"
+	"github.com/fleetdm/fleet/v4/server/service/redis_lock"
 	"github.com/fleetdm/fleet/v4/server/sso"
 	"github.com/fleetdm/fleet/v4/server/test"
-	kitlog "github.com/go-kit/kit/log"
+	"github.com/go-kit/kit/log"
+	kitlog "github.com/go-kit/log"
 	"github.com/google/uuid"
-	nanodep_storage "github.com/micromdm/nanodep/storage"
-	"github.com/micromdm/nanomdm/mdm"
-	"github.com/micromdm/nanomdm/push"
-	nanomdm_push "github.com/micromdm/nanomdm/push"
-	nanomdm_storage "github.com/micromdm/nanomdm/storage"
-	scep_depot "github.com/micromdm/scep/v2/depot"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"github.com/throttled/throttled/v2"
@@ -53,22 +62,31 @@ func newTestServiceWithConfig(t *testing.T, ds fleet.Datastore, fleetConfig conf
 	osqlogger := &OsqueryLogger{Status: writer, Result: writer}
 	logger := kitlog.NewNopLogger()
 
-	var ssoStore sso.SessionStore
-
 	var (
-		failingPolicySet  fleet.FailingPolicySet  = NewMemFailingPolicySet()
-		enrollHostLimiter fleet.EnrollHostLimiter = nopEnrollHostLimiter{}
-		is                fleet.InstallerStore
-		mdmStorage        nanomdm_storage.AllStorage
-		depStorage        nanodep_storage.AllStorage = &nanodep_mock.Storage{}
-		mdmPusher         nanomdm_push.Pusher
-		mailer            fleet.MailService = &mockMailService{SendEmailFn: func(e fleet.Email) error { return nil }}
+		failingPolicySet  fleet.FailingPolicySet        = NewMemFailingPolicySet()
+		enrollHostLimiter fleet.EnrollHostLimiter       = nopEnrollHostLimiter{}
+		depStorage        nanodep_storage.AllDEPStorage = &nanodep_mock.Storage{}
+		mailer            fleet.MailService             = &mockMailService{SendEmailFn: func(e fleet.Email) error { return nil }}
+		c                 clock.Clock                   = clock.C
+
+		is                    fleet.InstallerStore
+		mdmStorage            fleet.MDMAppleStore
+		mdmPusher             nanomdm_push.Pusher
+		ssoStore              sso.SessionStore
+		profMatcher           fleet.ProfileMatcher
+		softwareInstallStore  fleet.SoftwareInstallerStore
+		bootstrapPackageStore fleet.MDMBootstrapPackageStore
+		distributedLock       fleet.Lock
+		keyValueStore         fleet.KeyValueStore
 	)
-	var c clock.Clock = clock.C
 	if len(opts) > 0 {
 		if opts[0].Clock != nil {
 			c = opts[0].Clock
 		}
+	}
+
+	if len(opts) > 0 && opts[0].KeyValueStore != nil {
+		keyValueStore = opts[0].KeyValueStore
 	}
 
 	task := async.NewTask(ds, nil, c, config.OsqueryConfig{})
@@ -89,6 +107,12 @@ func newTestServiceWithConfig(t *testing.T, ds fleet.Datastore, fleetConfig conf
 		}
 		if opts[0].Pool != nil {
 			ssoStore = sso.NewSessionStore(opts[0].Pool)
+			profMatcher = apple_mdm.NewProfileMatcher(opts[0].Pool)
+			distributedLock = redis_lock.NewLock(opts[0].Pool)
+			keyValueStore = redis_key_value.New(opts[0].Pool)
+		}
+		if opts[0].ProfileMatcher != nil {
+			profMatcher = opts[0].ProfileMatcher
 		}
 		if opts[0].FailingPolicySet != nil {
 			failingPolicySet = opts[0].FailingPolicySet
@@ -99,6 +123,12 @@ func newTestServiceWithConfig(t *testing.T, ds fleet.Datastore, fleetConfig conf
 		if opts[0].UseMailService {
 			mailer, err = mail.NewService(config.TestConfig())
 			require.NoError(t, err)
+		}
+		if opts[0].SoftwareInstallStore != nil {
+			softwareInstallStore = opts[0].SoftwareInstallStore
+		}
+		if opts[0].BootstrapPackageStore != nil {
+			bootstrapPackageStore = opts[0].BootstrapPackageStore
 		}
 
 		// allow to explicitly set installer store to nil
@@ -116,16 +146,29 @@ func newTestServiceWithConfig(t *testing.T, ds fleet.Datastore, fleetConfig conf
 
 	cronSchedulesService := fleet.NewCronSchedules()
 
-	if len(opts) > 0 && opts[0].StartCronSchedules != nil {
-		for _, fn := range opts[0].StartCronSchedules {
-			err = cronSchedulesService.StartCronSchedule(fn(ctx, ds))
-			require.NoError(t, err)
+	var eh *errorstore.Handler
+	if len(opts) > 0 {
+		if opts[0].Pool != nil {
+			eh = errorstore.NewHandler(ctx, opts[0].Pool, logger, time.Minute*10)
+			ctx = ctxerr.NewContext(ctx, eh)
+		}
+		if opts[0].StartCronSchedules != nil {
+			for _, fn := range opts[0].StartCronSchedules {
+				err = cronSchedulesService.StartCronSchedule(fn(ctx, ds))
+				require.NoError(t, err)
+			}
 		}
 	}
 
-	mdmPushCertTopic := ""
-	if len(opts) > 0 && opts[0].APNSTopic != "" {
-		mdmPushCertTopic = opts[0].APNSTopic
+	var wstepManager microsoft_mdm.CertManager
+	if fleetConfig.MDM.WindowsWSTEPIdentityCert != "" && fleetConfig.MDM.WindowsWSTEPIdentityKey != "" {
+		rawCert, err := os.ReadFile(fleetConfig.MDM.WindowsWSTEPIdentityCert)
+		require.NoError(t, err)
+		rawKey, err := os.ReadFile(fleetConfig.MDM.WindowsWSTEPIdentityKey)
+		require.NoError(t, err)
+
+		wstepManager, err = microsoft_mdm.NewCertManager(ds, rawCert, rawKey)
+		require.NoError(t, err)
 	}
 
 	svc, err := NewService(
@@ -148,24 +191,37 @@ func newTestServiceWithConfig(t *testing.T, ds fleet.Datastore, fleetConfig conf
 		depStorage,
 		mdmStorage,
 		mdmPusher,
-		mdmPushCertTopic,
 		cronSchedulesService,
+		wstepManager,
 	)
 	if err != nil {
 		panic(err)
 	}
 	if lic.IsPremium() {
+		if softwareInstallStore == nil {
+			// default to file-based
+			dir := t.TempDir()
+			store, err := filesystem.NewSoftwareInstallerStore(dir)
+			if err != nil {
+				panic(err)
+			}
+			softwareInstallStore = store
+		}
 		svc, err = eeservice.NewService(
 			svc,
 			ds,
-			kitlog.NewNopLogger(),
+			logger,
 			fleetConfig,
 			mailer,
 			c,
 			depStorage,
 			apple_mdm.NewMDMAppleCommander(mdmStorage, mdmPusher),
-			"",
 			ssoStore,
+			profMatcher,
+			softwareInstallStore,
+			bootstrapPackageStore,
+			distributedLock,
+			keyValueStore,
 		)
 		if err != nil {
 			panic(err)
@@ -183,14 +239,21 @@ func newTestServiceWithClock(t *testing.T, ds fleet.Datastore, rs fleet.QueryRes
 
 func createTestUsers(t *testing.T, ds fleet.Datastore) map[string]fleet.User {
 	users := make(map[string]fleet.User)
+	// Map iteration is random so we sort and iterate using the testUsers keys.
+	var keys []string
+	for key := range testUsers {
+		keys = append(keys, key)
+	}
+	sort.Strings(keys)
 	userID := uint(1)
-	for _, u := range testUsers {
+	for _, key := range keys {
+		u := testUsers[key]
 		role := fleet.RoleObserver
 		if strings.Contains(u.Email, "admin") {
 			role = fleet.RoleAdmin
 		}
 		user := &fleet.User{
-			ID:         userID,
+			ID:         userID, // We need to set this in case ds is a mocked Datastore.
 			Name:       "Test Name " + u.Email,
 			Email:      u.Email,
 			GlobalRole: &role,
@@ -245,32 +308,47 @@ func (svc *mockMailService) SendEmail(e fleet.Email) error {
 	return svc.SendEmailFn(e)
 }
 
+func (svc *mockMailService) CanSendEmail(smtpSettings fleet.SMTPSettings) bool {
+	return smtpSettings.SMTPConfigured
+}
+
 type TestNewScheduleFunc func(ctx context.Context, ds fleet.Datastore) fleet.NewCronScheduleFunc
 
 type TestServerOpts struct {
-	Logger              kitlog.Logger
-	License             *fleet.LicenseInfo
-	SkipCreateTestUsers bool
-	Rs                  fleet.QueryResultStore
-	Lq                  fleet.LiveQueryStore
-	Pool                fleet.RedisPool
-	FailingPolicySet    fleet.FailingPolicySet
-	Clock               clock.Clock
-	Task                *async.Task
-	EnrollHostLimiter   fleet.EnrollHostLimiter
-	Is                  fleet.InstallerStore
-	FleetConfig         *config.FleetConfig
-	MDMStorage          nanomdm_storage.AllStorage
-	DEPStorage          nanodep_storage.AllStorage
-	SCEPStorage         scep_depot.Depot
-	MDMPusher           nanomdm_push.Pusher
-	HTTPServerConfig    *http.Server
-	StartCronSchedules  []TestNewScheduleFunc
-	UseMailService      bool
-	APNSTopic           string
+	Logger                kitlog.Logger
+	License               *fleet.LicenseInfo
+	SkipCreateTestUsers   bool
+	Rs                    fleet.QueryResultStore
+	Lq                    fleet.LiveQueryStore
+	Pool                  fleet.RedisPool
+	FailingPolicySet      fleet.FailingPolicySet
+	Clock                 clock.Clock
+	Task                  *async.Task
+	EnrollHostLimiter     fleet.EnrollHostLimiter
+	Is                    fleet.InstallerStore
+	FleetConfig           *config.FleetConfig
+	MDMStorage            fleet.MDMAppleStore
+	DEPStorage            nanodep_storage.AllDEPStorage
+	SCEPStorage           scep_depot.Depot
+	MDMPusher             nanomdm_push.Pusher
+	HTTPServerConfig      *http.Server
+	StartCronSchedules    []TestNewScheduleFunc
+	UseMailService        bool
+	APNSTopic             string
+	ProfileMatcher        fleet.ProfileMatcher
+	EnableCachedDS        bool
+	NoCacheDatastore      bool
+	SoftwareInstallStore  fleet.SoftwareInstallerStore
+	BootstrapPackageStore fleet.MDMBootstrapPackageStore
+	KeyValueStore         fleet.KeyValueStore
+	EnableSCEPProxy       bool
+	WithDEPWebview        bool
 }
 
 func RunServerForTestsWithDS(t *testing.T, ds fleet.Datastore, opts ...*TestServerOpts) (map[string]fleet.User, *httptest.Server) {
+	if len(opts) > 0 && opts[0].EnableCachedDS {
+		ds = cached_mysql.New(ds)
+	}
 	var rs fleet.QueryResultStore
 	if len(opts) > 0 && opts[0].Rs != nil {
 		rs = opts[0].Rs
@@ -302,6 +380,7 @@ func RunServerForTestsWithDS(t *testing.T, ds fleet.Datastore, opts ...*TestServ
 	if len(opts) > 0 {
 		mdmStorage := opts[0].MDMStorage
 		scepStorage := opts[0].SCEPStorage
+		commander := apple_mdm.NewMDMAppleCommander(mdmStorage, mdmPusher)
 		if mdmStorage != nil && scepStorage != nil {
 			err := RegisterAppleMDMProtocolServices(
 				rootMux,
@@ -309,21 +388,61 @@ func RunServerForTestsWithDS(t *testing.T, ds fleet.Datastore, opts ...*TestServ
 				mdmStorage,
 				scepStorage,
 				logger,
-				&MDMAppleCheckinAndCommandService{
-					ds:        ds,
-					commander: apple_mdm.NewMDMAppleCommander(mdmStorage, mdmPusher),
-					logger:    kitlog.NewNopLogger(),
+				NewMDMAppleCheckinAndCommandService(ds, commander, logger),
+				&MDMAppleDDMService{
+					ds:     ds,
+					logger: logger,
 				},
+				commander,
 			)
 			require.NoError(t, err)
 		}
+		if opts[0].EnableSCEPProxy {
+			err := RegisterSCEPProxy(
+				rootMux,
+				ds,
+				logger,
+			)
+			require.NoError(t, err)
+			origValidateNDESSCEPURL := validateNDESSCEPURL
+			origValidateNDESSCEPAdminURL := validateNDESSCEPAdminURL
+			t.Cleanup(func() {
+				validateNDESSCEPURL = origValidateNDESSCEPURL
+				validateNDESSCEPAdminURL = origValidateNDESSCEPAdminURL
+			})
+			validateNDESSCEPURL = func(_ context.Context, _ fleet.NDESSCEPProxyIntegration, _ log.Logger) error {
+				return nil
+			}
+			validateNDESSCEPAdminURL = func(_ context.Context, _ fleet.NDESSCEPProxyIntegration) error {
+				return nil
+			}
+		}
 	}
 
-	apiHandler := MakeHandler(svc, cfg, logger, limitStore, WithLoginRateLimit(throttled.PerMin(100)))
+	if len(opts) > 0 && opts[0].WithDEPWebview {
+		frontendHandler := WithMDMEnrollmentMiddleware(svc, logger, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			// do nothing and return 200
+			w.WriteHeader(http.StatusOK)
+		}))
+		rootMux.Handle("/", frontendHandler)
+	}
+
+	apiHandler := MakeHandler(svc, cfg, logger, limitStore, nil, WithLoginRateLimit(throttled.PerMin(1000)))
 	rootMux.Handle("/api/", apiHandler)
+	var errHandler *errorstore.Handler
+	ctxErrHandler := ctxerr.FromContext(ctx)
+	if ctxErrHandler != nil {
+		errHandler = ctxErrHandler.(*errorstore.Handler)
+	}
+	debugHandler := MakeDebugHandler(svc, cfg, logger, errHandler, ds)
+	rootMux.Handle("/debug/", debugHandler)
 
 	server := httptest.NewUnstartedServer(rootMux)
 	server.Config = cfg.Server.DefaultHTTPServer(ctx, rootMux)
+	// WriteTimeout is set for security purposes.
+	// If we don't set it, (bugy or malignant) clients making long running
+	// requests could DDOS Fleet.
+	require.NotZero(t, server.Config.WriteTimeout)
 	if len(opts) > 0 && opts[0].HTTPServerConfig != nil {
 		server.Config = opts[0].HTTPServerConfig
 		// make sure we use the application handler we just created
@@ -479,9 +598,7 @@ func (m *memFailingPolicySet) ListHosts(policyID uint) ([]fleet.PolicySetHost, e
 	defer m.mMu.RUnlock()
 
 	hosts := make([]fleet.PolicySetHost, len(m.m[policyID]))
-	for i := range m.m[policyID] {
-		hosts[i] = m.m[policyID][i]
-	}
+	copy(hosts, m.m[policyID])
 	return hosts, nil
 }
 
@@ -550,7 +667,7 @@ func newMockAPNSPushProviderFactory() (*mock.APNSPushProviderFactory, *mock.APNS
 	return factory, provider
 }
 
-func mockSuccessfulPush(pushes []*mdm.Push) (map[string]*push.Response, error) {
+func mockSuccessfulPush(_ context.Context, pushes []*mdm.Push) (map[string]*push.Response, error) {
 	res := make(map[string]*push.Response, len(pushes))
 	for _, p := range pushes {
 		res[p.Token.String()] = &push.Response{
@@ -561,7 +678,7 @@ func mockSuccessfulPush(pushes []*mdm.Push) (map[string]*push.Response, error) {
 	return res, nil
 }
 
-func mdmAppleConfigurationRequiredEndpoints() []struct {
+func mdmConfigurationRequiredEndpoints() []struct {
 	method, path        string
 	deviceAuthenticated bool
 	premiumOnly         bool
@@ -577,30 +694,452 @@ func mdmAppleConfigurationRequiredEndpoints() []struct {
 		{"DELETE", "/api/latest/fleet/mdm/apple/installers/1", false, false},
 		{"GET", "/api/latest/fleet/mdm/apple/installers", false, false},
 		{"GET", "/api/latest/fleet/mdm/apple/devices", false, false},
-		{"GET", "/api/latest/fleet/mdm/apple/dep/devices", false, false},
 		{"GET", "/api/latest/fleet/mdm/apple/profiles", false, false},
 		{"GET", "/api/latest/fleet/mdm/apple/profiles/1", false, false},
 		{"DELETE", "/api/latest/fleet/mdm/apple/profiles/1", false, false},
 		{"GET", "/api/latest/fleet/mdm/apple/profiles/summary", false, false},
 		{"PATCH", "/api/latest/fleet/mdm/hosts/1/unenroll", false, false},
-		{"GET", "/api/latest/fleet/mdm/hosts/1/encryption_key", false, false},
+		{"DELETE", "/api/latest/fleet/hosts/1/mdm", false, false},
+		{"GET", "/api/latest/fleet/mdm/hosts/1/profiles", false, true},
+		{"GET", "/api/latest/fleet/hosts/1/configuration_profiles", false, true},
 		{"POST", "/api/latest/fleet/mdm/hosts/1/lock", false, false},
 		{"POST", "/api/latest/fleet/mdm/hosts/1/wipe", false, false},
 		{"PATCH", "/api/latest/fleet/mdm/apple/settings", false, false},
 		{"GET", "/api/latest/fleet/mdm/apple", false, false},
+		{"GET", "/api/latest/fleet/apns", false, false},
 		{"GET", apple_mdm.EnrollPath + "?token=test", false, false},
 		{"GET", apple_mdm.InstallerPath + "?token=test", false, false},
-		{"GET", "/api/latest/fleet/mdm/apple/setup/eula/token", false, false},
+		{"GET", "/api/latest/fleet/mdm/setup/eula/0982A979-B1C9-4BDF-B584-5A37D32A1172", false, true},
+		{"GET", "/api/latest/fleet/setup_experience/eula/0982A979-B1C9-4BDF-B584-5A37D32A1172", false, true},
+		{"DELETE", "/api/latest/fleet/mdm/setup/eula/token", false, true},
+		{"DELETE", "/api/latest/fleet/setup_experience/eula/token", false, true},
+		{"GET", "/api/latest/fleet/mdm/setup/eula/metadata", false, true},
+		{"GET", "/api/latest/fleet/setup_experience/eula/metadata", false, true},
+		{"GET", "/api/latest/fleet/mdm/apple/setup/eula/0982A979-B1C9-4BDF-B584-5A37D32A1172", false, false},
 		{"DELETE", "/api/latest/fleet/mdm/apple/setup/eula/token", false, false},
 		{"GET", "/api/latest/fleet/mdm/apple/setup/eula/metadata", false, false},
-		// TODO: this endpoint accepts multipart/form data that gets
+		{"GET", "/api/latest/fleet/mdm/apple/enrollment_profile", false, false},
+		{"GET", "/api/latest/fleet/enrollment_profiles/automatic", false, false},
+		{"POST", "/api/latest/fleet/mdm/apple/enrollment_profile", false, false},
+		{"POST", "/api/latest/fleet/enrollment_profiles/automatic", false, false},
+		{"DELETE", "/api/latest/fleet/mdm/apple/enrollment_profile", false, false},
+		{"DELETE", "/api/latest/fleet/enrollment_profiles/automatic", false, false},
+		{"POST", "/api/latest/fleet/device/%s/migrate_mdm", true, true},
+		{"POST", "/api/latest/fleet/mdm/apple/profiles/preassign", false, true},
+		{"POST", "/api/latest/fleet/mdm/apple/profiles/match", false, true},
+		{"POST", "/api/latest/fleet/mdm/commands/run", false, false},
+		{"POST", "/api/latest/fleet/commands/run", false, false},
+		{"GET", "/api/latest/fleet/mdm/commandresults", false, false},
+		{"GET", "/api/latest/fleet/commands/results", false, false},
+		{"GET", "/api/latest/fleet/mdm/commands", false, false},
+		{"GET", "/api/latest/fleet/commands", false, false},
+		{"POST", "/api/fleet/orbit/disk_encryption_key", false, false},
+		{"GET", "/api/latest/fleet/mdm/profiles/1", false, false},
+		{"GET", "/api/latest/fleet/configuration_profiles/1", false, false},
+		{"DELETE", "/api/latest/fleet/mdm/profiles/1", false, false},
+		{"DELETE", "/api/latest/fleet/configuration_profiles/1", false, false},
+		// TODO: those endpoints accept multipart/form data that gets
 		// parsed before the MDM check, we need to refactor this
 		// function to return more information to the caller, or find a
 		// better way to test these endpoints.
-		// {"POST", "/api/latest/fleet/mdm/apple/setup/eula"},
-		{"GET", "/api/latest/fleet/mdm/apple/enrollment_profile", false, false},
-		{"POST", "/api/latest/fleet/mdm/apple/enrollment_profile", false, false},
-		{"DELETE", "/api/latest/fleet/mdm/apple/enrollment_profile", false, false},
-		{"POST", "/api/latest/fleet/device/%s/migrate_mdm", true, true},
+		// {"POST", "/api/latest/fleet/mdm/profiles", false, false},
+		// {"POST", "/api/latest/fleet/configuration_profiles", false, false},
+		// {"POST", "/api/latest/fleet/mdm/setup/eula"},
+		// {"POST", "/api/latest/fleet/setup_experience/eula"},
+		// {"POST", "/api/latest/fleet/mdm/bootstrap", false, true},
+		// {"POST", "/api/latest/fleet/bootstrap", false, true},
+		{"GET", "/api/latest/fleet/mdm/profiles", false, false},
+		{"GET", "/api/latest/fleet/configuration_profiles", false, false},
+		{"GET", "/api/latest/fleet/mdm/manual_enrollment_profile", false, true},
+		{"GET", "/api/latest/fleet/enrollment_profiles/manual", false, true},
+		{"GET", "/api/latest/fleet/mdm/bootstrap/1/metadata", false, true},
+		{"GET", "/api/latest/fleet/bootstrap/1/metadata", false, true},
+		{"DELETE", "/api/latest/fleet/mdm/bootstrap/1", false, true},
+		{"DELETE", "/api/latest/fleet/bootstrap/1", false, true},
+		{"GET", "/api/latest/fleet/mdm/bootstrap?token=1", false, true},
+		{"GET", "/api/latest/fleet/bootstrap?token=1", false, true},
+		{"GET", "/api/latest/fleet/mdm/bootstrap/summary", false, true},
+		{"GET", "/api/latest/fleet/mdm/apple/bootstrap/summary", false, true},
+		{"GET", "/api/latest/fleet/bootstrap/summary", false, true},
+		{"PATCH", "/api/latest/fleet/mdm/apple/setup", false, true},
+		{"PATCH", "/api/latest/fleet/setup_experience", false, true},
+		{"POST", "/api/fleet/orbit/setup_experience/status", false, true},
+	}
+}
+
+// getURLSchemas returns a list of all valid URI schemas
+func getURISchemas() []string {
+	return []string{
+		"aaa",
+		"aaas",
+		"about",
+		"acap",
+		"acct",
+		"acd",
+		"acr",
+		"adiumxtra",
+		"adt",
+		"afp",
+		"afs",
+		"aim",
+		"amss",
+		"android",
+		"appdata",
+		"apt",
+		"ar",
+		"ark",
+		"at",
+		"attachment",
+		"aw",
+		"barion",
+		"bb",
+		"beshare",
+		"bitcoin",
+		"bitcoincash",
+		"blob",
+		"bolo",
+		"browserext",
+		"cabal",
+		"calculator",
+		"callto",
+		"cap",
+		"cast",
+		"casts",
+		"chrome",
+		"chrome-extension",
+		"cid",
+		"coap",
+		"coap+tcp",
+		"coap+ws",
+		"coaps",
+		"coaps+tcp",
+		"coaps+ws",
+		"com-eventbrite-attendee",
+		"content",
+		"content-type",
+		"crid",
+		"cstr",
+		"cvs",
+		"dab",
+		"dat",
+		"data",
+		"dav",
+		"dhttp",
+		"diaspora",
+		"dict",
+		"did",
+		"dis",
+		"dlna-playcontainer",
+		"dlna-playsingle",
+		"dns",
+		"dntp",
+		"doi",
+		"dpp",
+		"drm",
+		"drop",
+		"dtmi",
+		"dtn",
+		"dvb",
+		"dvx",
+		"dweb",
+		"ed2k",
+		"eid",
+		"elsi",
+		"embedded",
+		"ens",
+		"ethereum",
+		"example",
+		"facetime",
+		"fax",
+		"feed",
+		"feedready",
+		"fido",
+		"file",
+		"filesystem",
+		"finger",
+		"first-run-pen-experience",
+		"fish",
+		"fm",
+		"ftp",
+		"fuchsia-pkg",
+		"geo",
+		"gg",
+		"git",
+		"gitoid",
+		"gizmoproject",
+		"go",
+		"gopher",
+		"graph",
+		"grd",
+		"gtalk",
+		"h323",
+		"ham",
+		"hcap",
+		"hcp",
+		"http",
+		"https",
+		"hxxp",
+		"hxxps",
+		"hydrazone",
+		"hyper",
+		"iax",
+		"icap",
+		"icon",
+		"im",
+		"imap",
+		"info",
+		"iotdisco",
+		"ipfs",
+		"ipn",
+		"ipns",
+		"ipp",
+		"ipps",
+		"irc",
+		"irc6",
+		"ircs",
+		"iris",
+		"iris.beep",
+		"iris.lwz",
+		"iris.xpc",
+		"iris.xpcs",
+		"isostore",
+		"itms",
+		"jabber",
+		"jar",
+		"jms",
+		"keyparc",
+		"lastfm",
+		"lbry",
+		"ldap",
+		"ldaps",
+		"leaptofrogans",
+		"lorawan",
+		"lpa",
+		"lvlt",
+		"magnet",
+		"mailserver",
+		"mailto",
+		"maps",
+		"market",
+		"matrix",
+		"message",
+		"microsoft.windows.camera",
+		"microsoft.windows.camera.multipicker",
+		"microsoft.windows.camera.picker",
+		"mid",
+		"mms",
+		"modem",
+		"mongodb",
+		"moz",
+		"ms-access",
+		"ms-appinstaller",
+		"ms-browser-extension",
+		"ms-calculator",
+		"ms-drive-to",
+		"ms-enrollment",
+		"ms-excel",
+		"ms-eyecontrolspeech",
+		"ms-gamebarservices",
+		"ms-gamingoverlay",
+		"ms-getoffice",
+		"ms-help",
+		"ms-infopath",
+		"ms-inputapp",
+		"ms-launchremotedesktop",
+		"ms-lockscreencomponent-config",
+		"ms-media-stream-id",
+		"ms-meetnow",
+		"ms-mixedrealitycapture",
+		"ms-mobileplans",
+		"ms-newsandinterests",
+		"ms-officeapp",
+		"ms-people",
+		"ms-project",
+		"ms-powerpoint",
+		"ms-publisher",
+		"ms-remotedesktop",
+		"ms-remotedesktop-launch",
+		"ms-restoretabcompanion",
+		"ms-screenclip",
+		"ms-screensketch",
+		"ms-search",
+		"ms-search-repair",
+		"ms-secondary-screen-controller",
+		"ms-secondary-screen-setup",
+		"ms-settings",
+		"ms-settings-airplanemode",
+		"ms-settings-bluetooth",
+		"ms-settings-camera",
+		"ms-settings-cellular",
+		"ms-settings-cloudstorage",
+		"ms-settings-connectabledevices",
+		"ms-settings-displays-topology",
+		"ms-settings-emailandaccounts",
+		"ms-settings-language",
+		"ms-settings-location",
+		"ms-settings-lock",
+		"ms-settings-nfctransactions",
+		"ms-settings-notifications",
+		"ms-settings-power",
+		"ms-settings-privacy",
+		"ms-settings-proximity",
+		"ms-settings-screenrotation",
+		"ms-settings-wifi",
+		"ms-settings-workplace",
+		"ms-spd",
+		"ms-stickers",
+		"ms-sttoverlay",
+		"ms-transit-to",
+		"ms-useractivityset",
+		"ms-virtualtouchpad",
+		"ms-visio",
+		"ms-walk-to",
+		"ms-whiteboard",
+		"ms-whiteboard-cmd",
+		"ms-word",
+		"msnim",
+		"msrp",
+		"msrps",
+		"mss",
+		"mt",
+		"mtqp",
+		"mumble",
+		"mupdate",
+		"mvn",
+		"news",
+		"nfs",
+		"ni",
+		"nih",
+		"nntp",
+		"notes",
+		"num",
+		"ocf",
+		"oid",
+		"onenote",
+		"onenote-cmd",
+		"opaquelocktoken",
+		"openpgp4fpr",
+		"otpauth",
+		"p1",
+		"pack",
+		"palm",
+		"paparazzi",
+		"payment",
+		"payto",
+		"pkcs11",
+		"platform",
+		"pop",
+		"pres",
+		"prospero",
+		"proxy",
+		"pwid",
+		"psyc",
+		"pttp",
+		"qb",
+		"query",
+		"quic-transport",
+		"redis",
+		"rediss",
+		"reload",
+		"res",
+		"resource",
+		"rmi",
+		"rsync",
+		"rtmfp",
+		"rtmp",
+		"rtsp",
+		"rtsps",
+		"rtspu",
+		"sarif",
+		"secondlife",
+		"secret-token",
+		"service",
+		"session",
+		"sftp",
+		"sgn",
+		"shc",
+		"shttp",
+		"sieve",
+		"simpleledger",
+		"simplex",
+		"sip",
+		"sips",
+		"skype",
+		"smb",
+		"smp",
+		"sms",
+		"smtp",
+		"snews",
+		"snmp",
+		"soap.beep",
+		"soap.beeps",
+		"soldat",
+		"spiffe",
+		"spotify",
+		"ssb",
+		"ssh",
+		"starknet",
+		"steam",
+		"stun",
+		"stuns",
+		"submit",
+		"svn",
+		"swh",
+		"swid",
+		"swidpath",
+		"tag",
+		"taler",
+		"teamspeak",
+		"tel",
+		"teliaeid",
+		"telnet",
+		"tftp",
+		"things",
+		"thismessage",
+		"tip",
+		"tn3270",
+		"tool",
+		"turn",
+		"turns",
+		"tv",
+		"udp",
+		"unreal",
+		"upt",
+		"urn",
+		"ut2004",
+		"uuid-in-package",
+		"v-event",
+		"vemmi",
+		"ventrilo",
+		"ves",
+		"videotex",
+		"vnc",
+		"view-source",
+		"vscode",
+		"vscode-insiders",
+		"vsls",
+		"w3",
+		"wais",
+		"web3",
+		"wcr",
+		"webcal",
+		"web+ap",
+		"wifi",
+		"wpid",
+		"ws",
+		"wss",
+		"wtai",
+		"wyciwyg",
+		"xcon",
+		"xcon-userid",
+		"xfire",
+		"xmlrpc.beep",
+		"xmlrpc.beeps",
+		"xmpp",
+		"xri",
+		"ymsgr",
+		"z39.50",
+		"z39.50r",
+		"z39.50s",
 	}
 }

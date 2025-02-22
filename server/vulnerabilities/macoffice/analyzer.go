@@ -49,7 +49,7 @@ func getLatestReleaseNotes(vulnPath string) (ReleaseNotes, error) {
 	return relNotes, nil
 }
 
-// collectVulnerabilities compares 'software' againts all 'release notes' returning all detected
+// collectVulnerabilities compares 'software' against all 'release notes' returning all detected
 // vulnerabilities.
 func collectVulnerabilities(
 	software *fleet.Software,
@@ -84,7 +84,7 @@ func getStoredVulnerabilities(
 	ds fleet.Datastore,
 	softwareID uint,
 ) ([]fleet.SoftwareVulnerability, error) {
-	storedSoftware, err := ds.SoftwareByID(ctx, softwareID, false)
+	storedSoftware, err := ds.SoftwareByID(ctx, softwareID, nil, false, nil)
 	if err != nil {
 		return nil, err
 	}

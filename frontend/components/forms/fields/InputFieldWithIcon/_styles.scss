@@ -1,13 +1,10 @@
 .input-icon-field {
-  margin-top: $pad-medium;
   position: relative;
-  width: 100%;
 
   &__icon {
     position: absolute;
     right: 6px;
     top: 28px;
-    font-size: 18px;
     color: $core-fleet-blue;
 
     &--active {
@@ -17,7 +14,31 @@
     &--error {
       border: 1px solid $core-vibrant-red;
       box-sizing: border-box;
-      border-radius: 4px;
+      border-radius: $border-radius;
+    }
+  }
+
+  // Relative input wrapper with absolute icon corrects icon alignment on all browsers
+  &__input-wrapper {
+    position: relative;
+    height: 40px;
+    display: flex;
+    align-items: center;
+  }
+
+  // Refactor to include svg icons
+  &--icon-start {
+    margin-top: 0;
+
+    .input-icon-field__icon {
+      position: absolute;
+      left: 12px;
+      top: 0;
+      height: 40px;
+      width: 16px;
+      flex-wrap: wrap;
+      align-content: center;
+      z-index: 1;
     }
   }
 
@@ -26,7 +47,7 @@
     background-color: $ui-light-grey;
     border-radius: $border-radius;
     padding: 9px 30px 9px $pad-medium;
-    font-size: $small;
+    font-size: $x-small;
     text-indent: 1px;
     position: relative;
     width: 100%;
@@ -37,11 +58,6 @@
 
     ::placeholder {
       color: $core-fleet-blue;
-    }
-
-    &:hover,
-    &:focus {
-      border: 1px solid $core-vibrant-blue;
     }
 
     &:focus {
@@ -57,15 +73,41 @@
       color: $core-vibrant-red;
       border: 1px solid $core-vibrant-red;
       box-sizing: border-box;
-      border-radius: 4px;
+      border-radius: $border-radius;
     }
   }
 
+  &__input-wrapper:hover {
+    .input-icon-field__input {
+      border: 1px solid $core-vibrant-blue;
+    }
+
+    // Icon color matches border color on focus and on hover
+    .input-icon-field__icon {
+      svg {
+        path {
+          fill: $core-vibrant-blue;
+        }
+      }
+    }
+  }
+
+  .input-icon-field__input:focus {
+    border: 1px solid $core-vibrant-blue;
+
+    // Icon color matches border color on focus and on hover
+    + .input-icon-field__icon {
+      svg {
+        path {
+          fill: $core-vibrant-blue;
+        }
+      }
+    }
+  }
   &__label {
     display: block;
     font-size: $x-small;
     font-weight: $bold;
-    margin-bottom: $pad-xsmall;
 
     &[data-has-tooltip="true"] {
       margin-bottom: $pad-small;
@@ -76,26 +118,10 @@
     color: $core-vibrant-red;
   }
 
-  &__hint {
-    font-size: $x-small;
-    font-style: italic;
-    font-weight: $regular;
-    line-height: 20px;
-    display: inline-block;
-    margin-top: $pad-small;
-
-    code {
-      color: $core-vibrant-blue;
-      background-color: $ui-light-grey;
-      padding: $pad-xxsmall;
-      font-family: "SourceCodePro", $monospace;
-    }
-  }
-
   // overwrite icon position and input padding
   &--icon-start {
     input {
-      padding: 9px 1rem 9px 3rem;
+      padding: 9.5px 12px 9.5px 36px; // New figma styling
     }
     .fleeticon {
       right: auto;
@@ -123,5 +149,16 @@
   input[type="search"]::-webkit-search-results-button,
   input[type="search"]::-webkit-search-results-decoration {
     display: none;
+  }
+
+  &__clear-button {
+    position: absolute;
+    right: 12px;
+    top: 0;
+    height: 40px;
+    width: 16px;
+    flex-wrap: wrap;
+    align-content: center;
+    z-index: 1;
   }
 }

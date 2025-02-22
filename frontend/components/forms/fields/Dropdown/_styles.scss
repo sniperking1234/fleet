@@ -1,4 +1,23 @@
 .dropdown {
+  &__custom-value {
+    display: inline-flex;
+    svg {
+      padding: 0 $pad-small;
+    }
+
+    &-label {
+      line-height: 38px;
+      font-size: $small;
+    }
+  }
+
+  &__custom-arrow {
+    display: flex;
+
+    svg {
+      transition: transform 0.25s ease;
+    }
+  }
   &__label {
     display: block;
     font-size: $small;
@@ -18,7 +37,7 @@
           color: $core-vibrant-red;
           border: 1px solid $core-vibrant-red;
           box-sizing: border-box;
-          border-radius: 4px;
+          border-radius: $border-radius;
         }
 
         .Select-arrow {
@@ -31,13 +50,12 @@
   &__option {
     display: flex;
     flex-direction: column;
+    gap: $pad-small;
+    width: 100%;
   }
 
   &__help-text {
-    margin-top: $pad-xsmall;
-    font-size: $xx-small;
-    white-space: normal;
-    color: $core-fleet-blue;
+    @include help-text;
     font-style: italic;
   }
 }
@@ -46,15 +64,19 @@
   &.dropdown__select {
     border: 1px solid $ui-fleet-black-10;
     border-radius: $border-radius;
-    &:hover {
+
+    &:hover:not(.is-disabled) {
       box-shadow: none;
-      border: 1px solid $core-vibrant-blue;
+      border-color: $core-vibrant-blue;
     }
   }
+
   .Select-control {
     background-color: $ui-light-grey;
     border: 0;
     border-radius: $border-radius;
+    cursor: pointer;
+
     .Select-value {
       font-size: $small;
       background-color: $ui-light-grey;
@@ -113,16 +135,6 @@
     }
   }
 
-  .Select-arrow {
-    content: url("../assets/images/icon-chevron-black-16x16@2x.png");
-    height: 16px;
-    width: 16px;
-    vertical-align: middle;
-    margin-top: -1px;
-    margin-left: -4px;
-    border: none;
-  }
-
   &.is-focused {
     &.dropdown__select {
       border: 1px solid $core-vibrant-blue;
@@ -137,34 +149,48 @@
   }
 
   &.is-open {
+    .dropdown__custom-arrow .dropdown__icon {
+      svg {
+        transform: rotate(180deg);
+        transition: transform 0.25s ease;
+        path {
+          stroke: $core-vibrant-blue-over;
+        }
+      }
+    }
+    .dropdown__custom-value .dropdown__icon {
+      svg path {
+        fill: $core-vibrant-blue-over;
+      }
+    }
     .Select-control {
       border-radius: $border-radius;
-
-      .Select-arrow {
-        content: url("../assets/images/icon-chevron-blue-16x16@2x.png");
-        height: 16px;
-        width: 16px;
-        margin-left: -4px;
-        border: none;
-        top: 0px;
-      }
     }
   }
   :hover {
-    .Select-arrow {
-      content: url("../assets/images/icon-chevron-blue-16x16@2x.png");
-      height: 16px;
-      width: 16px;
-      margin-left: -4px;
-      border: none;
+    .dropdown__custom-arrow .dropdown__icon {
+      svg {
+        path {
+          stroke: $core-vibrant-blue-over;
+        }
+      }
     }
+    .dropdown__custom-value .dropdown__icon {
+      svg path {
+        fill: $core-vibrant-blue-over;
+      }
+    }
+
     &.is-open {
-      .Select-arrow {
-        content: url("../assets/images/icon-chevron-blue-16x16@2x.png");
-        height: 16px;
-        width: 16px;
-        margin-left: -4px;
-        border: none;
+      .dropdown__custom-arrow .dropdown__icon {
+        svg path {
+          stroke: $core-vibrant-blue-over;
+        }
+      }
+      .dropdown__custom-value .dropdown__icon {
+        svg path {
+          fill: $core-vibrant-blue-over;
+        }
       }
     }
   }
@@ -179,6 +205,12 @@
         }
       }
     }
+
+    &.is-disabled {
+      > .Select-control .Select-value .Select-value-label {
+        color: $ui-fleet-black-50;
+      }
+    }
   }
 
   .Select-menu-outer {
@@ -191,6 +223,10 @@
     animation: fade-in 150ms ease-out;
   }
 
+  .Select-menu {
+    max-height: 190px;
+  }
+
   .Select-noresults {
     font-size: $x-small;
   }
@@ -201,6 +237,12 @@
     margin: 0;
     padding: 10px;
     display: block;
+    border-radius: $border-radius;
+
+    &.is-selected {
+      background-color: transparent;
+      font-weight: bold;
+    }
 
     &.is-focused {
       background-color: $ui-vibrant-blue-10;
@@ -208,6 +250,10 @@
       .Select-icon {
         color: $ui-vibrant-blue-10;
       }
+    }
+
+    &:active {
+      background-color: $core-vibrant-blue-down;
     }
 
     &:last-child {
@@ -277,12 +323,12 @@
     }
 
     .Select-arrow-zone {
-      display: block;
+      display: flex;
     }
 
     .Select-option {
       &.is-disabled {
-        color: $core-fleet-black;
+        color: $ui-fleet-black-50;
         cursor: default;
 
         &.is-focused {
@@ -301,5 +347,13 @@
     position: relative;
     top: 4px;
     margin-left: 3px;
+  }
+}
+
+.form-field {
+  &__label {
+    &--disabled {
+      color: $ui-fleet-black-50;
+    }
   }
 }

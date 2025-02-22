@@ -1,7 +1,6 @@
 import React, { useState, useEffect, useContext, useCallback } from "react";
 import { useQuery } from "react-query";
 import { InjectedRouter } from "react-router";
-import { size } from "lodash";
 import { AxiosError } from "axios";
 
 import paths from "router/paths";
@@ -9,6 +8,7 @@ import { AppContext } from "context/app";
 import { NotificationContext } from "context/notification";
 import { RoutingContext } from "context/routing";
 import { ISSOSettings } from "interfaces/ssoSettings";
+import { ILoginUserData } from "interfaces/user";
 import local from "utilities/local";
 import configAPI from "services/entities/config";
 import sessionsAPI, { ISSOSettingsResponse } from "services/entities/sessions";
@@ -26,11 +26,6 @@ interface ILoginPageProps {
     query: { vulnerable?: boolean };
     search: string;
   };
-}
-
-interface ILoginData {
-  email: string;
-  password: string;
 }
 
 interface IStatusMessages {
@@ -65,23 +60,37 @@ const LoginPage = ({ router, location }: ILoginPageProps) => {
   const { redirectLocation } = useContext(RoutingContext);
 
   const [errors, setErrors] = useState<Record<string, string>>({});
-  const [loginVisible, setLoginVisible] = useState(true);
+  const [isSubmitting, setIsSubmitting] = useState(false);
+  const [pendingEmail, setPendingEmail] = useState(false);
 
-  const {
-    data: ssoSettings,
-    isLoading: isLoadingSSOSettings,
-    error: errorSSOSettings,
-  } = useQuery<ISSOSettingsResponse, Error, ISSOSettings>(
-    ["ssoSettings"],
-    () => sessionsAPI.ssoSettings(),
-    {
-      enabled: !currentUser,
-      onError: (err) => {
-        console.error(err);
-      },
-      select: (data) => data.settings,
-    }
-  );
+  const { data: ssoSettings, isLoading: isLoadingSSOSettings } = useQuery<
+    ISSOSettingsResponse,
+    Error,
+    ISSOSettings
+  >(["ssoSettings"], () => sessionsAPI.ssoSettings(), {
+    enabled: !currentUser,
+    onError: (err) => {
+      console.error(err);
+    },
+    select: (data) => data.settings,
+  });
+
+  useEffect(() => {
+    // this only needs to run once so we can wrap it in useEffect to avoid unneccesary third-party
+    // API calls
+    (async function testGravatarAvailability() {
+      try {
+        const response = await fetch("https://www.gravatar.com/avatar/0000");
+        if (response.ok) {
+          localStorage.setItem("gravatar_available", "true");
+        } else {
+          localStorage.setItem("gravatar_available", "false");
+        }
+      } catch (error) {
+        localStorage.setItem("gravatar_available", "false");
+      }
+    })();
+  }, []);
 
   useEffect(() => {
     if (
@@ -94,23 +103,6 @@ const LoginPage = ({ router, location }: ILoginPageProps) => {
     }
   }, [availableTeams, config, currentUser, redirectLocation, router]);
 
-  useEffect(() => {
-    // this only needs to run once so we can wrap it in useEffect to avoid unneccesary third-party
-    // API calls
-    (async function testGravatarAvailability() {
-      try {
-        const response = await fetch("https://gravatar.com/avatar");
-        if (response.ok) {
-          localStorage.setItem("gravatar_available", "true");
-        } else {
-          localStorage.setItem("gravatar_available", "false");
-        }
-      } catch (error) {
-        localStorage.setItem("gravatar_available", "false");
-      }
-    })();
-  }, []);
-
   // TODO: Fix this. If renderFlash is added as a dependency it causes infinite re-renders.
   useEffect(() => {
     let status = new URLSearchParams(location.search).get("status");
@@ -120,44 +112,43 @@ const LoginPage = ({ router, location }: ILoginPageProps) => {
     }
   }, [location?.search]);
 
-  const onChange = useCallback(() => {
-    if (size(errors)) {
-      setErrors({});
-    }
-
-    return false;
-  }, [errors]);
-
   const onSubmit = useCallback(
-    async (formData: ILoginData) => {
-      const { DASHBOARD, RESET_PASSWORD } = paths;
+    async (formData: ILoginUserData) => {
+      setIsSubmitting(true);
+      const { DASHBOARD, RESET_PASSWORD, NO_ACCESS } = paths;
 
       try {
-        const { user, available_teams, token } = await sessionsAPI.create(
-          formData
-        );
+        const response = await sessionsAPI.login(formData);
+        const { user, available_teams, token } = response;
+
         local.setItem("auth_token", token);
 
-        setLoginVisible(false);
         setCurrentUser(user);
         setAvailableTeams(user, available_teams);
         setCurrentTeam(undefined);
 
+        if (!user.global_role && user.teams.length === 0) {
+          return router.push(NO_ACCESS);
+        }
         // Redirect to password reset page if user is forced to reset password.
         // Any other requests will fail.
-        if (user.force_password_reset) {
+        else if (user.force_password_reset) {
           return router.push(RESET_PASSWORD);
-        }
-
-        if (!config) {
+        } else if (!config) {
           const configResponse = await configAPI.loadAll();
           setConfig(configResponse);
         }
         return router.push(redirectLocation || DASHBOARD);
       } catch (response) {
+        if ((response as { status: number }).status === 202) {
+          setPendingEmail(true);
+        }
+
         const errorObject = formatErrorResponse(response);
         setErrors(errorObject);
         return false;
+      } finally {
+        setIsSubmitting(false);
       }
     },
     [
@@ -201,12 +192,12 @@ const LoginPage = ({ router, location }: ILoginPageProps) => {
   return (
     <AuthenticationFormWrapper>
       <LoginForm
-        onChangeFunc={onChange}
         handleSubmit={onSubmit}
-        isHidden={!loginVisible}
-        serverErrors={errors}
+        baseError={errors.base}
         ssoSettings={ssoSettings}
         handleSSOSignOn={ssoSignOn}
+        isSubmitting={isSubmitting}
+        pendingEmail={pendingEmail}
       />
     </AuthenticationFormWrapper>
   );

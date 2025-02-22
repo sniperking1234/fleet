@@ -11,6 +11,8 @@ export default class TableChromeExtensions extends Table {
     "update_url",
     "permissions",
     "permissions_json",
+    "state",
+    "path",
   ];
 
   async generate() {
@@ -29,10 +31,11 @@ export default class TableChromeExtensions extends Table {
         update_url: ext.updateUrl,
         permissions: mergedPerms.join(", "),
         permissions_json: JSON.stringify(mergedPerms),
-        state: ext.enabled ? 1 : 0,
+        state: ext.enabled ? "1" : "0",
+        path: "",
       });
     }
 
-    return rows;
+    return { data: rows };
   }
 }

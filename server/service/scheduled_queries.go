@@ -8,6 +8,12 @@ import (
 )
 
 ////////////////////////////////////////////////////////////////////////////////
+////////////////////////////////////////////////////////////////////////////////
+// All API endpoints in this file are used for 2017 packs functionality.
+////////////////////////////////////////////////////////////////////////////////
+////////////////////////////////////////////////////////////////////////////////
+
+////////////////////////////////////////////////////////////////////////////////
 // Get Scheduled Queries In Pack
 ////////////////////////////////////////////////////////////////////////////////
 
@@ -25,9 +31,9 @@ type getScheduledQueriesInPackResponse struct {
 	Err       error                    `json:"error,omitempty"`
 }
 
-func (r getScheduledQueriesInPackResponse) error() error { return r.Err }
+func (r getScheduledQueriesInPackResponse) Error() error { return r.Err }
 
-func getScheduledQueriesInPackEndpoint(ctx context.Context, request interface{}, svc fleet.Service) (errorer, error) {
+func getScheduledQueriesInPackEndpoint(ctx context.Context, request interface{}, svc fleet.Service) (fleet.Errorer, error) {
 	req := request.(*getScheduledQueriesInPackRequest)
 	resp := getScheduledQueriesInPackResponse{Scheduled: []scheduledQueryResponse{}}
 
@@ -46,7 +52,6 @@ func getScheduledQueriesInPackEndpoint(ctx context.Context, request interface{},
 }
 
 func (svc *Service) GetScheduledQueriesInPack(ctx context.Context, id uint, opts fleet.ListOptions) ([]*fleet.ScheduledQuery, error) {
-	// Scheduled queries are currently authorized the same as packs.
 	if err := svc.authz.Authorize(ctx, &fleet.Pack{}, fleet.ActionRead); err != nil {
 		return nil, err
 	}
@@ -74,9 +79,9 @@ type scheduleQueryResponse struct {
 	Err       error                   `json:"error,omitempty"`
 }
 
-func (r scheduleQueryResponse) error() error { return r.Err }
+func (r scheduleQueryResponse) Error() error { return r.Err }
 
-func scheduleQueryEndpoint(ctx context.Context, request interface{}, svc fleet.Service) (errorer, error) {
+func scheduleQueryEndpoint(ctx context.Context, request interface{}, svc fleet.Service) (fleet.Errorer, error) {
 	req := request.(*scheduleQueryRequest)
 
 	scheduled, err := svc.ScheduleQuery(ctx, &fleet.ScheduledQuery{
@@ -162,9 +167,9 @@ type getScheduledQueryResponse struct {
 	Err       error                   `json:"error,omitempty"`
 }
 
-func (r getScheduledQueryResponse) error() error { return r.Err }
+func (r getScheduledQueryResponse) Error() error { return r.Err }
 
-func getScheduledQueryEndpoint(ctx context.Context, request interface{}, svc fleet.Service) (errorer, error) {
+func getScheduledQueryEndpoint(ctx context.Context, request interface{}, svc fleet.Service) (fleet.Errorer, error) {
 	req := request.(*getScheduledQueryRequest)
 
 	sq, err := svc.GetScheduledQuery(ctx, req.ID)
@@ -202,9 +207,9 @@ type modifyScheduledQueryResponse struct {
 	Err       error                   `json:"error,omitempty"`
 }
 
-func (r modifyScheduledQueryResponse) error() error { return r.Err }
+func (r modifyScheduledQueryResponse) Error() error { return r.Err }
 
-func modifyScheduledQueryEndpoint(ctx context.Context, request interface{}, svc fleet.Service) (errorer, error) {
+func modifyScheduledQueryEndpoint(ctx context.Context, request interface{}, svc fleet.Service) (fleet.Errorer, error) {
 	req := request.(*modifyScheduledQueryRequest)
 
 	sq, err := svc.ModifyScheduledQuery(ctx, req.ID, req.ScheduledQueryPayload)
@@ -270,7 +275,7 @@ func (svc *Service) unauthorizedModifyScheduledQuery(ctx context.Context, id uin
 
 	if p.Shard != nil {
 		if p.Shard.Valid {
-			val := uint(p.Shard.Int64)
+			val := uint(p.Shard.Int64) //nolint:gosec // dismiss G115
 			sq.Shard = &val
 		} else {
 			sq.Shard = nil
@@ -292,9 +297,9 @@ type deleteScheduledQueryResponse struct {
 	Err error `json:"error,omitempty"`
 }
 
-func (r deleteScheduledQueryResponse) error() error { return r.Err }
+func (r deleteScheduledQueryResponse) Error() error { return r.Err }
 
-func deleteScheduledQueryEndpoint(ctx context.Context, request interface{}, svc fleet.Service) (errorer, error) {
+func deleteScheduledQueryEndpoint(ctx context.Context, request interface{}, svc fleet.Service) (fleet.Errorer, error) {
 	req := request.(*deleteScheduledQueryRequest)
 
 	err := svc.DeleteScheduledQuery(ctx, req.ID)

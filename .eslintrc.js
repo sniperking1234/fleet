@@ -5,7 +5,6 @@ module.exports = {
     "plugin:jest/recommended",
     "plugin:react-hooks/recommended",
     "plugin:@typescript-eslint/recommended",
-    "plugin:cypress/recommended",
     "plugin:prettier/recommended",
     "plugin:storybook/recommended",
   ],
@@ -82,15 +81,7 @@ module.exports = {
     "jsx-a11y/heading-has-content": "off",
     "jsx-a11y/anchor-has-content": "off",
   },
-  overrides: [
-    {
-      files: ["cypress/**/*.ts"],
-      // Set to turn off jest linting error on cypress library
-      rules: {
-        "jest/valid-expect": "off",
-      },
-    },
-  ],
+  overrides: [],
   settings: {
     "import/resolver": {
       webpack: {

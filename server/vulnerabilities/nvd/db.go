@@ -6,8 +6,8 @@ import (
 	"os"
 	"strings"
 
-	"github.com/facebookincubator/nvdtools/cpedict"
-	"github.com/facebookincubator/nvdtools/wfn"
+	"github.com/fleetdm/fleet/v4/server/vulnerabilities/nvd/tools/cpedict"
+	"github.com/fleetdm/fleet/v4/server/vulnerabilities/nvd/tools/wfn"
 	"github.com/jmoiron/sqlx"
 	_ "github.com/mattn/go-sqlite3"
 )
@@ -84,7 +84,7 @@ func generateCPEItem(item cpedict.CPEItem) ([]interface{}, map[string]string, er
 
 const batchSize = 800
 
-func GenerateCPEDB(path string, items *cpedict.CPEList) error {
+func GenerateCPEDB(path string, items []cpedict.CPEItem) error {
 	err := os.Remove(path)
 	if err != nil && !errors.Is(err, os.ErrNotExist) {
 		return err
@@ -105,7 +105,7 @@ func GenerateCPEDB(path string, items *cpedict.CPEList) error {
 	deprecationsCount := 0
 	var deprecationsBatch []interface{}
 
-	for _, item := range items.Items {
+	for _, item := range items {
 		cpes, deprecations, err := generateCPEItem(item)
 		if err != nil {
 			return err

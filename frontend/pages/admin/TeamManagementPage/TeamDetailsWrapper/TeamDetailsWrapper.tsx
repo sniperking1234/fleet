@@ -29,15 +29,11 @@ import BackLink from "components/BackLink";
 import TeamsDropdown from "components/TeamsDropdown";
 import MainContent from "components/MainContent";
 import DeleteTeamModal from "../components/DeleteTeamModal";
-import EditTeamModal from "../components/EditTeamModal";
+import RenameTeamModal from "../components/RenameTeamModal";
 import DeleteSecretModal from "../../../../components/EnrollSecrets/DeleteSecretModal";
 import SecretEditorModal from "../../../../components/EnrollSecrets/SecretEditorModal";
 import AddHostsModal from "../../../../components/AddHostsModal";
 import EnrollSecretModal from "../../../../components/EnrollSecrets/EnrollSecretModal";
-
-import EyeIcon from "../../../../../assets/images/icon-eye-16x16@2x.png";
-import PencilIcon from "../../../../../assets/images/icon-pencil-14x14@2x.png";
-import TrashIcon from "../../../../../assets/images/icon-trash-14x14@2x.png";
 
 const baseClass = "team-details";
 
@@ -48,12 +44,16 @@ interface ITeamDetailsSubNavItem {
 
 const teamDetailsSubNav: ITeamDetailsSubNavItem[] = [
   {
-    name: "Members",
-    getPathname: PATHS.TEAM_DETAILS_MEMBERS,
+    name: "Users",
+    getPathname: PATHS.TEAM_DETAILS_USERS,
   },
   {
     name: "Agent options",
     getPathname: PATHS.TEAM_DETAILS_OPTIONS,
+  },
+  {
+    name: "Settings",
+    getPathname: PATHS.TEAM_DETAILS_SETTINGS,
   },
 ];
 
@@ -97,6 +97,7 @@ const TeamDetailsWrapper = ({
     isGlobalAdmin,
     isPremiumTier,
     setAvailableTeams,
+    setUserSettings,
     setCurrentUser,
   } = useContext(AppContext);
 
@@ -131,7 +132,7 @@ const TeamDetailsWrapper = ({
   const [showEnrollSecretModal, setShowEnrollSecretModal] = useState(false);
   const [showSecretEditorModal, setShowSecretEditorModal] = useState(false);
   const [showDeleteTeamModal, setShowDeleteTeamModal] = useState(false);
-  const [showEditTeamModal, setShowEditTeamModal] = useState(false);
+  const [showRenameTeamModal, setShowRenameTeamModal] = useState(false);
   const [backendValidators, setBackendValidators] = useState<{
     [key: string]: string;
   }>({});
@@ -140,9 +141,10 @@ const TeamDetailsWrapper = ({
 
   const { refetch: refetchMe } = useQuery(["me"], () => usersAPI.me(), {
     enabled: false,
-    onSuccess: ({ user, available_teams }: IGetMeResponse) => {
+    onSuccess: ({ user, available_teams, settings }: IGetMeResponse) => {
       setCurrentUser(user);
       setAvailableTeams(user, available_teams);
+      setUserSettings(settings);
     },
   });
 
@@ -224,10 +226,10 @@ const TeamDetailsWrapper = ({
     setShowDeleteTeamModal(!showDeleteTeamModal);
   }, [showDeleteTeamModal, setShowDeleteTeamModal]);
 
-  const toggleEditTeamModal = useCallback(() => {
-    setShowEditTeamModal(!showEditTeamModal);
+  const toggleRenameTeamModal = useCallback(() => {
+    setShowRenameTeamModal(!showRenameTeamModal);
     setBackendValidators({});
-  }, [showEditTeamModal, setShowEditTeamModal, setBackendValidators]);
+  }, [showRenameTeamModal, setShowRenameTeamModal, setBackendValidators]);
 
   const onSaveSecret = async (enrollSecretString: string) => {
     // Creates new list of secrets removing selected secret and adding new secret
@@ -295,13 +297,11 @@ const TeamDetailsWrapper = ({
 
     try {
       await teamsAPI.destroy(teamIdForApi);
+      router.push(PATHS.ADMIN_TEAMS);
       renderFlash("success", "Team removed");
-      // setCurrentTeam(undefined);
-      return router.push(PATHS.ADMIN_TEAMS);
     } catch (response) {
       renderFlash("error", "Something went wrong removing the team");
       console.error(response);
-      return false;
     } finally {
       toggleDeleteTeamModal();
       setIsUpdatingTeams(false);
@@ -316,7 +316,7 @@ const TeamDetailsWrapper = ({
       const updatedAttrs = generateUpdateData(currentTeamDetails, formData);
       // no updates, so no need for a request.
       if (!updatedAttrs) {
-        toggleEditTeamModal();
+        toggleRenameTeamModal();
         return;
       }
 
@@ -330,6 +330,7 @@ const TeamDetailsWrapper = ({
         setBackendValidators({});
         refetchTeams();
         refetchMe();
+        toggleRenameTeamModal();
       } catch (response) {
         console.error(response);
         const errorObject = formatErrorResponse(response);
@@ -337,17 +338,24 @@ const TeamDetailsWrapper = ({
           setBackendValidators({
             name: "A team with this name already exists",
           });
+        } else if (errorObject.base.includes("all teams")) {
+          setBackendValidators({
+            name: `"All teams" is a reserved team name. Please try another name.`,
+          });
+        } else if (errorObject.base.includes("no team")) {
+          setBackendValidators({
+            name: `"No team" is a reserved team name. Please try another name.`,
+          });
         } else {
           renderFlash("error", "Could not create team. Please try again.");
         }
       } finally {
-        toggleEditTeamModal();
         setIsUpdatingTeams(false);
       }
     },
     [
       currentTeamDetails,
-      toggleEditTeamModal,
+      toggleRenameTeamModal,
       teamIdForApi,
       renderFlash,
       refetchTeams,
@@ -418,23 +426,26 @@ const TeamDetailsWrapper = ({
                   type: "secondary",
                   label: "Manage enroll secrets",
                   buttonVariant: "text-icon",
-                  icon: EyeIcon,
+                  iconSvg: "eye",
                   onClick: toggleManageEnrollSecretsModal,
+                  gitOpsModeCompatible: true,
                 },
                 {
                   type: "secondary",
-                  label: "Edit team",
+                  label: "Rename team",
                   buttonVariant: "text-icon",
-                  icon: PencilIcon,
-                  onClick: toggleEditTeamModal,
+                  iconSvg: "pencil",
+                  onClick: toggleRenameTeamModal,
+                  gitOpsModeCompatible: true,
                 },
                 {
                   type: "secondary",
                   label: "Delete team",
                   buttonVariant: "text-icon",
-                  icon: TrashIcon,
+                  iconSvg: "trash",
                   hideAction: !isGlobalAdmin,
                   onClick: toggleDeleteTeamModal,
+                  gitOpsModeCompatible: true,
                 },
               ]}
             />
@@ -465,11 +476,6 @@ const TeamDetailsWrapper = ({
             enrollSecret={teamSecrets?.[0]?.secret}
             isAnyTeamSelected={isAnyTeamSelected}
             isLoading={isLoadingTeams}
-            // TODO: Currently, prepacked installers in Fleet Sandbox use the global enroll secret,
-            // and Fleet Sandbox runs Fleet Free so explicitly setting isSandboxMode here is an
-            // additional precaution/reminder to revisit this in connection with future changes.
-            // See https://github.com/fleetdm/fleet/issues/4970#issuecomment-1187679407.
-            isSandboxMode={false}
             onCancel={toggleAddHostsModal}
             openEnrollSecretModal={toggleManageEnrollSecretsModal}
           />
@@ -511,9 +517,9 @@ const TeamDetailsWrapper = ({
             isUpdatingTeams={isUpdatingTeams}
           />
         )}
-        {showEditTeamModal && (
-          <EditTeamModal
-            onCancel={toggleEditTeamModal}
+        {showRenameTeamModal && (
+          <RenameTeamModal
+            onCancel={toggleRenameTeamModal}
             onSubmit={onEditSubmit}
             defaultName={currentTeamDetails.name}
             backendValidators={backendValidators}

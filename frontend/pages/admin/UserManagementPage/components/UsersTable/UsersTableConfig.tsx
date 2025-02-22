@@ -11,7 +11,8 @@ import { IUser, UserRole } from "interfaces/user";
 import { IDropdownOption } from "interfaces/dropdownOption";
 import { generateRole, generateTeam, greyCell } from "utilities/helpers";
 import { DEFAULT_EMPTY_CELL_VALUE } from "utilities/constants";
-import DropdownCell from "../../../../../components/TableContainer/DataTable/DropdownCell";
+import { COLORS } from "styles/var/colors";
+import ActionsDropdown from "../../../../../components/ActionsDropdown";
 
 interface IHeaderProps {
   column: {
@@ -32,7 +33,7 @@ interface ICellProps extends IRowProps {
   };
 }
 
-interface IDropdownCellProps extends IRowProps {
+interface IActionsDropdownProps extends IRowProps {
   cell: {
     value: IDropdownOption[];
   };
@@ -44,7 +45,7 @@ interface IDataColumn {
   accessor: string;
   Cell:
     | ((props: ICellProps) => JSX.Element)
-    | ((props: IDropdownCellProps) => JSX.Element);
+    | ((props: IActionsDropdownProps) => JSX.Element);
   disableHidden?: boolean;
   disableSortBy?: boolean;
 }
@@ -98,7 +99,7 @@ const generateTableHeaders = (
                     type="dark"
                     effect="solid"
                     id={`api-only-tooltip-${cellProps.row.original.id}`}
-                    backgroundColor="#3e4771"
+                    backgroundColor={COLORS["tooltip-bg"]}
                     clickable
                     delayHide={200} // need delay set to hover using clickable
                   >
@@ -131,12 +132,15 @@ const generateTableHeaders = (
         if (cellProps.cell.value === "GitOps") {
           return (
             <TooltipWrapper
-              position="top"
-              tipContent={`
-            The GitOps role is only available on the command-line<br/>
-            when creating an API-only user. This user has no<br/>
-            access to the UI.
-          `}
+              tipContent={
+                <>
+                  The GitOps role is only available on the command-line
+                  <br />
+                  when creating an API-only user. This user has no
+                  <br />
+                  access to the UI.
+                </>
+              }
             >
               GitOps
             </TooltipWrapper>
@@ -145,21 +149,26 @@ const generateTableHeaders = (
         if (cellProps.cell.value === "Observer+") {
           return (
             <TooltipWrapper
-              position="top"
-              tipContent={`
-            Users with the Observer+ role have access to all of<br/>
-            the same functions as an Observer, with the added<br/>
-            ability to run any live query against all hosts. 
-          `}
+              tipContent={
+                <>
+                  Users with the Observer+ role have access to all of
+                  <br />
+                  the same functions as an Observer, with the added
+                  <br />
+                  ability to run any live query against all hosts.
+                </>
+              }
             >
               {cellProps.cell.value}
             </TooltipWrapper>
           );
         }
+        const greyAndItalic = greyCell(cellProps.cell.value);
         return (
           <TextCell
             value={cellProps.cell.value}
-            greyed={greyCell(cellProps.cell.value)}
+            grey={greyAndItalic}
+            italic={greyAndItalic}
           />
         );
       },
@@ -191,19 +200,20 @@ const generateTableHeaders = (
       Header: "",
       disableSortBy: true,
       accessor: "actions",
-      Cell: (cellProps: IDropdownCellProps) => (
-        <DropdownCell
+      Cell: (cellProps: IActionsDropdownProps) => (
+        <ActionsDropdown
           options={cellProps.cell.value}
           onChange={(value: string) =>
             actionSelectHandler(value, cellProps.row.original)
           }
-          placeholder={"Actions"}
+          placeholder="Actions"
+          menuAlign="right"
         />
       ),
     },
   ];
 
-  // Add Teams tab for premium tier only
+  // Add Teams column for premium tier
   if (isPremiumTier) {
     tableHeaders.splice(2, 0, {
       title: "Teams",
@@ -211,10 +221,7 @@ const generateTableHeaders = (
       accessor: "teams",
       disableSortBy: true,
       Cell: (cellProps: ICellProps) => (
-        <TextCell
-          value={cellProps.cell.value}
-          greyed={greyCell(cellProps.cell.value)}
-        />
+        <TextCell value={cellProps.cell.value} />
       ),
     });
   }
@@ -225,7 +232,7 @@ const generateTableHeaders = (
 const generateStatus = (type: string, data: IUser | IInvite): string => {
   const { teams, global_role } = data;
   if (global_role === null && teams.length === 0) {
-    return "No Access";
+    return "No access";
   }
 
   return type === "invite" ? "Invite pending" : "Active";

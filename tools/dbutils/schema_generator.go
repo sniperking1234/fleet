@@ -5,7 +5,6 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
-	"io/ioutil"
 	"os"
 	"os/exec"
 	"time"
@@ -13,7 +12,7 @@ import (
 	"github.com/WatchBeam/clock"
 	"github.com/fleetdm/fleet/v4/server/config"
 	"github.com/fleetdm/fleet/v4/server/datastore/mysql"
-	"github.com/go-kit/kit/log"
+	"github.com/go-kit/log"
 )
 
 const (
@@ -68,7 +67,7 @@ func main() {
 
 	// Dump schema to dumpfile
 	cmd := exec.Command(
-		"docker-compose", "exec", "-T", "mysql_test",
+		"docker", "compose", "exec", "-T", "mysql_test",
 		// Command run inside container
 		"mysqldump", "-u"+testUsername, "-p"+testPassword, "schemadb", "--compact", "--skip-comments",
 	)
@@ -76,5 +75,5 @@ func main() {
 	cmd.Stdout = &stdoutBuf
 	panicif(cmd.Run())
 
-	panicif(ioutil.WriteFile(os.Args[1], stdoutBuf.Bytes(), 0o655))
+	panicif(os.WriteFile(os.Args[1], stdoutBuf.Bytes(), 0o655))
 }

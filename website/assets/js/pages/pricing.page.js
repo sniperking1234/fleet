@@ -3,52 +3,56 @@ parasails.registerPage('pricing', {
   //  ║║║║║ ║ ║╠═╣║    ╚═╗ ║ ╠═╣ ║ ║╣
   //  ╩╝╚╝╩ ╩ ╩╩ ╩╩═╝  ╚═╝ ╩ ╩ ╩ ╩ ╚═╝
   data: {
-    formData: {},
-    estimatedCost: '', // For pricing calculator
-    estimatedUltimateCostPerHost: 7,
-    displaySecurityPricingMode: false, // For pricing mode switch
-    estimatedUltimateCostPerHostHasBeenUpdated: false,
+    pricingMode: 'all',
+    modal: '',
+    selectedFeature: undefined,
+    showExpandedTable: false,
   },
 
   //  ╦  ╦╔═╗╔═╗╔═╗╦ ╦╔═╗╦  ╔═╗
   //  ║  ║╠╣ ║╣ ║  ╚╦╝║  ║  ║╣
   //  ╩═╝╩╚  ╚═╝╚═╝ ╩ ╚═╝╩═╝╚═╝
   beforeMount: function() {
-    //…
+    // Switch the pricing features table's mode and show all features if a user visits /pricing#it or /pricing#security
+    if(window.location.hash){
+      if(window.location.hash.toLowerCase() === '#it') {
+        this.pricingMode = 'IT';
+        this.showExpandedTable = true;
+      } else if(window.location.hash.toLowerCase() === '#security'){
+        this.pricingMode = 'Security';
+        this.showExpandedTable = true;
+      }
+      window.location.hash = '';
+    } else if(this.primaryBuyingSituation){
+      if(['eo-security', 'vm'].includes(this.primaryBuyingSituation)){
+        this.pricingMode = 'Security';
+      } else {
+        this.pricingMode = 'IT';
+      }
+    }
   },
   mounted: async function(){
-    //…
+    // Tooltips for desktop users are opened by a user hovering their cursor over them.
+    $('[data-toggle="tooltip"]').tooltip({
+      container: '#pricing',
+      trigger: 'hover',
+    });
   },
 
   //  ╦╔╗╔╔╦╗╔═╗╦═╗╔═╗╔═╗╔╦╗╦╔═╗╔╗╔╔═╗
   //  ║║║║ ║ ║╣ ╠╦╝╠═╣║   ║ ║║ ║║║║╚═╗
   //  ╩╝╚╝ ╩ ╚═╝╩╚═╩ ╩╚═╝ ╩ ╩╚═╝╝╚╝╚═╝
   methods: {
-    clickOpenChatWidget: function() {
-      if(window.HubSpotConversations && window.HubSpotConversations.widget){
-        window.HubSpotConversations.widget.open();
-      }
+    clickChangePricingMode: async function(pricingMode){
+      this.pricingMode = pricingMode;
     },
-    updateEstimatedTotal: function() {
-      let total =
-      (7 * (this.formData.macos ? this.formData.macos : 0)) +
-      (7 * (this.formData.windows ? this.formData.windows : 0)) +
-      (2 * (this.formData.linux ? this.formData.linux : 0)) +
-      (2 * (this.formData.other ? this.formData.other : 0));
-      let totalNumberOfDevices =
-      (1 * (this.formData.macos ? this.formData.macos : 0)) +
-      (1 * (this.formData.windows ? this.formData.windows : 0)) +
-      (1 * (this.formData.linux ? this.formData.linux : 0)) +
-      (1 * (this.formData.other ? this.formData.other : 0));
-      this.estimatedCost = Number(total);
-      if(totalNumberOfDevices < 1){
-        this.estimatedUltimateCostPerHost = 7;
-        this.estimatedUltimateCostPerHostHasBeenUpdated = false;
-      } else {
-        this.estimatedUltimateCostPerHost = this.estimatedCost / totalNumberOfDevices;
-        this.estimatedUltimateCostPerHostHasBeenUpdated = true;
-      }
-
+    clickOpenMobileTooltip: function(feature){
+      this.selectedFeature = feature;
+      this.modal = 'mobileTooltip';
     },
+    closeModal: function() {
+      this.selectedFeature = undefined;
+      this.modal = '';
+    }
   }
 });

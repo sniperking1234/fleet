@@ -8,8 +8,10 @@ import (
 	"reflect"
 	"regexp"
 	"strings"
+	"time"
 
 	"github.com/google/uuid"
+	"github.com/rs/zerolog"
 )
 
 var (
@@ -17,6 +19,14 @@ var (
 	ErrPasswordResetRequired = &passwordResetRequiredError{}
 	ErrMissingLicense        = &licenseError{}
 	ErrMDMNotConfigured      = &MDMNotConfiguredError{}
+	ErrNotConfigured         = &NotConfiguredError{}
+
+	MDMNotConfiguredMessage              = "MDM features aren't turned on in Fleet. For more information about setting up MDM, please visit https://fleetdm.com/docs/using-fleet"
+	WindowsMDMNotConfiguredMessage       = "Windows MDM isn't turned on. Visit https://fleetdm.com/docs/using-fleet to learn how to turn on MDM."
+	AppleMDMNotConfiguredMessage         = "macOS MDM isn't turned on. Visit https://fleetdm.com/docs/using-fleet to learn how to turn on MDM."
+	AppleABMDefaultTeamDeprecatedMessage = "mdm.apple_bm_default_team has been deprecated. Please use the new mdm.apple_business_manager key documented here: https://fleetdm.com/learn-more-about/apple-business-manager-gitops"
+	CantTurnOffMDMForWindowsHostsMessage = "Can't turn off MDM for Windows hosts."
+	CantTurnOffMDMForIOSOrIPadOSMessage  = "Can't turn off MDM for iOS or iPadOS hosts. Use wipe instead."
 )
 
 // ErrWithStatusCode is an interface for errors that should set a specific HTTP
@@ -35,7 +45,7 @@ type ErrWithInternal interface {
 	Internal() string
 }
 
-// ErrWithInternal is an interface for errors that include additional logging
+// ErrWithLogFields is an interface for errors that include additional logging
 // fields that should be logged in server logs but not sent to clients.
 type ErrWithLogFields interface {
 	error
@@ -51,6 +61,14 @@ type ErrWithRetryAfter interface {
 	error
 	// RetryAfter returns the number of seconds to wait before retry.
 	RetryAfter() int
+}
+
+// ErrWithIsClientError is an interface for errors that explicitly specify
+// whether they are client errors or not. By default, errors are treated as
+// server errors.
+type ErrWithIsClientError interface {
+	error
+	IsClientError() bool
 }
 
 type invalidArgWithStatusError struct {
@@ -92,7 +110,7 @@ func (e *ErrorWithUUID) UUID() string {
 }
 
 // InvalidArgumentError is the error returned when invalid data is presented to
-// a service method.
+// a service method. It is a client error.
 type InvalidArgumentError struct {
 	Errors []InvalidArgument
 
@@ -111,6 +129,10 @@ func NewInvalidArgumentError(name, reason string) *InvalidArgumentError {
 	var invalid InvalidArgumentError
 	invalid.Append(name, reason)
 	return &invalid
+}
+
+func (e InvalidArgumentError) IsClientError() bool {
+	return true
 }
 
 func (e *InvalidArgumentError) Append(name, reason string) {
@@ -272,6 +294,36 @@ func (e PermissionError) PermissionError() []map[string]string {
 	return forbidden
 }
 
+// OTAForbiddenError is a special kind of forbidden error that intentionally
+// exposes information about the error so it can be shown in iPad/iPhone native
+// dialogs during OTA enrollment.
+//
+// I couldn't find any documentation but the way it works is:
+//
+// - if the response has a status code 403
+// - and the body has a `message` field
+//
+// the content of `message` will be displayed to the end user.
+type OTAForbiddenError struct {
+	ErrorWithUUID
+	InternalErr error
+}
+
+func (e OTAForbiddenError) Error() string {
+	return "Couldn't install the profile. Invalid enroll secret. Please contact your IT admin."
+}
+
+func (e OTAForbiddenError) StatusCode() int {
+	return http.StatusForbidden
+}
+
+func (e OTAForbiddenError) Internal() string {
+	if e.InternalErr == nil {
+		return ""
+	}
+	return e.InternalErr.Error()
+}
+
 // licenseError is returned when the application is not properly licensed.
 type licenseError struct {
 	ErrorWithUUID
@@ -308,34 +360,54 @@ func (e *MDMNotConfiguredError) StatusCode() int {
 }
 
 func (e *MDMNotConfiguredError) Error() string {
-	return "MDM features aren't turned on in Fleet. For more information about setting up MDM, please visit https://fleetdm.com/docs/using-fleet/mobile-device-management"
+	return MDMNotConfiguredMessage
 }
 
-// BadGatewayError is an error type that generates a 502 status code.
-type BadGatewayError struct {
+// NotConfiguredError is a generic "not configured" error that can be used
+// when expected configuration is missing.
+type NotConfiguredError struct{}
+
+func (e *NotConfiguredError) Error() string {
+	return "not configured"
+}
+
+// GatewayError is an error type that generates a 502 or 504 status code.
+type GatewayError struct {
 	Message string
 	err     error
+	code    int
 
 	ErrorWithUUID
 }
 
-// NewBadGatewayError returns a MDMBadGatewayError with the message and
-// error specified.
-func NewBadGatewayError(message string, err error) *BadGatewayError {
-	return &BadGatewayError{
+// NewBadGatewayError returns a GatewayError with the message and
+// error specified and that returns a 502 status code.
+func NewBadGatewayError(message string, err error) *GatewayError {
+	return &GatewayError{
 		Message: message,
 		err:     err,
+		code:    http.StatusBadGateway,
+	}
+}
+
+// NewGatewayTimeoutError returns a GatewayError with the message and
+// error specified and that returns a 504 status code.
+func NewGatewayTimeoutError(message string, err error) *GatewayError {
+	return &GatewayError{
+		Message: message,
+		err:     err,
+		code:    http.StatusGatewayTimeout,
 	}
 }
 
 // StatusCode implements the kithttp.StatusCoder interface so we can customize the
 // HTTP status code of the response returning this error.
-func (e *BadGatewayError) StatusCode() int {
-	return http.StatusBadGateway
+func (e *GatewayError) StatusCode() int {
+	return e.code
 }
 
 // Error returns the error message.
-func (e *BadGatewayError) Error() string {
+func (e *GatewayError) Error() string {
 	msg := e.Message
 	if e.err != nil {
 		msg += ": " + e.err.Error()
@@ -417,6 +489,15 @@ func IsJSONUnknownFieldError(err error) bool {
 	return rxJSONUnknownField.MatchString(err.Error())
 }
 
+func GetJSONUnknownField(err error) *string {
+	errCause := Cause(err)
+	if IsJSONUnknownFieldError(errCause) {
+		substr := rxJSONUnknownField.FindStringSubmatch(errCause.Error())
+		return &substr[1]
+	}
+	return nil
+}
+
 // UserMessage implements the user-friendly translation of the error if its
 // root cause is one of the supported types, otherwise it returns the error
 // message.
@@ -466,4 +547,104 @@ func Cause(err error) error {
 		}
 		err = uerr
 	}
+}
+
+// FleetdError is an error that can be reported by any of the fleetd
+// components.
+type FleetdError struct {
+	ErrorSource         string         `json:"error_source"`
+	ErrorSourceVersion  string         `json:"error_source_version"`
+	ErrorTimestamp      time.Time      `json:"error_timestamp"`
+	ErrorMessage        string         `json:"error_message"`
+	ErrorAdditionalInfo map[string]any `json:"error_additional_info"`
+	// Vital errors are always reported to Fleet server.
+	Vital bool `json:"vital"`
+}
+
+// Error implements the error interface
+func (fe FleetdError) Error() string {
+	return fe.ErrorMessage
+}
+
+// MarshalZerologObject implements `zerolog.LogObjectMarshaler` so all details
+// about the error can be logged by the components that use zerolog (Orbit,
+// Fleet Desktop)
+func (fe FleetdError) MarshalZerologObject(e *zerolog.Event) {
+	e.Bool("vital", fe.Vital)
+	e.Str("error_source", fe.ErrorSource)
+	e.Str("error_source_version", fe.ErrorSourceVersion)
+	e.Time("error_timestamp", fe.ErrorTimestamp)
+	e.Str("error_message", fe.ErrorMessage)
+	e.Interface("error_additional_info", fe.ErrorAdditionalInfo)
+}
+
+// ToMap returns a map representation of the error
+func (fe FleetdError) ToMap() map[string]any {
+	return map[string]any{
+		"vital":                 fe.Vital,
+		"error_source":          fe.ErrorSource,
+		"error_source_version":  fe.ErrorSourceVersion,
+		"error_timestamp":       fe.ErrorTimestamp,
+		"error_message":         fe.ErrorMessage,
+		"error_additional_info": fe.ErrorAdditionalInfo,
+	}
+}
+
+// OrbitError is used for orbit endpoints, to return an error message along
+// with a failed request's response.
+type OrbitError struct {
+	Message string
+}
+
+// Error implements the error interface for the OrbitError.
+func (e OrbitError) Error() string {
+	return e.Message
+}
+
+// Message that may surfaced by the server or the fleetctl client.
+const (
+	// Hosts, general
+	HostNotFoundErrMsg           = "Host doesn't exist. Make sure you provide a valid hostname, UUID, or serial number. Learn more about host identifiers: https://fleetdm.com/learn-more-about/host-identifiers"
+	NoHostsTargetedErrMsg        = "No hosts targeted. Make sure you provide a valid hostname, UUID, or serial number. Learn more about host identifiers: https://fleetdm.com/learn-more-about/host-identifiers"
+	TargetedHostsDontExistErrMsg = "One or more targeted hosts don't exist. Make sure you provide a valid hostname, UUID, or serial number. Learn more about host identifiers: https://fleetdm.com/learn-more-about/host-identifiers"
+
+	// Scripts
+	RunScriptInvalidTypeErrMsg             = "File type not supported. Only .sh (Bash) and .ps1 (PowerShell) file types are allowed."
+	RunScriptHostOfflineErrMsg             = "Script can't run on offline host."
+	RunScriptForbiddenErrMsg               = "You don't have the right permissions in Fleet to run the script."
+	RunScriptAlreadyRunningErrMsg          = "A script is already running on this host. Please wait about 5 minutes to let it finish."
+	RunScriptHostTimeoutErrMsg             = "Fleet didn't hear back from the host in under 5 minutes (timeout for live scripts). Fleet doesn't know if the script ran because it didn't receive the result. Go to Fleet and check Host details > Activities to see script results."
+	RunScriptScriptsDisabledGloballyErrMsg = "Running scripts is disabled in organization settings."
+	RunScriptDisabledErrMsg                = "Scripts are disabled for this host. To run scripts, deploy the fleetd agent with scripts enabled."
+	RunScriptsOrbitDisabledErrMsg          = "Couldn't run script. To run a script, deploy the fleetd agent with --enable-scripts."
+	RunScriptAsyncScriptEnqueuedMsg        = "Script is running or will run when the host comes online."
+	RunScripSavedMaxLenErrMsg              = "Script is too large. It's limited to 500,000 characters (approximately 10,000 lines)."
+	RunScripUnsavedMaxLenErrMsg            = "Script is too large. It's limited to 10,000 characters (approximately 125 lines)."
+	RunScriptGatewayTimeoutErrMsg          = "Gateway timeout. Fleet didn't hear back from the host and doesn't know if the script ran. Please make sure your load balancer timeout isn't shorter than the Fleet server timeout."
+
+	// End user authentication
+	EndUserAuthDEPWebURLConfiguredErrMsg = `End user authentication can't be configured when the configured automatic enrollment (DEP) profile specifies a configuration_web_url.` // #nosec G101
+
+	// Labels
+	InvalidLabelSpecifiedErrMsg = "Invalid label name(s):"
+)
+
+// ConflictError is used to indicate a conflict, such as a UUID conflict in the DB.
+type ConflictError struct {
+	Message string
+}
+
+// Error implements the error interface for the ConflictError.
+func (e ConflictError) Error() string {
+	return e.Message
+}
+
+// StatusCode implements the kithttp.StatusCoder interface.
+func (e ConflictError) StatusCode() int {
+	return http.StatusConflict
+}
+
+// Errorer interface is implemented by response structs to encode business logic errors
+type Errorer interface {
+	Error() error
 }

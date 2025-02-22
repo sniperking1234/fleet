@@ -2,19 +2,25 @@ import React, { useState, useCallback, useContext } from "react";
 import { useQuery } from "react-query";
 import { InjectedRouter, Params } from "react-router/lib/Router";
 
+import { AppContext } from "context/app";
+import { NotificationContext } from "context/notification";
+
 import { IPack, IStoredPackResponse } from "interfaces/pack";
-import { IQuery, IFleetQueriesResponse } from "interfaces/query";
+import { IQuery } from "interfaces/query";
 import {
   IPackQueryFormData,
   IScheduledQuery,
   IStoredScheduledQueriesResponse,
 } from "interfaces/scheduled_query";
 import { ITarget, ITargetsAPIResponse } from "interfaces/target";
-import { AppContext } from "context/app";
-import { NotificationContext } from "context/notification";
+import {
+  IQueryKeyQueriesLoadAll,
+  ISchedulableQuery,
+} from "interfaces/schedulable_query";
+import { getErrorReason } from "interfaces/errors";
 
 import packsAPI from "services/entities/packs";
-import queriesAPI from "services/entities/queries";
+import queriesAPI, { IQueriesResponse } from "services/entities/queries";
 import scheduledQueriesAPI from "services/entities/scheduled_queries";
 
 import PATHS from "router/paths";
@@ -49,13 +55,18 @@ const EditPacksPage = ({
 
   const packId: number = parseInt(paramsPackId, 10);
 
-  const { data: fleetQueries } = useQuery<
-    IFleetQueriesResponse,
+  const { data: queries } = useQuery<
+    IQueriesResponse,
     Error,
-    IQuery[]
-  >(["fleet queries"], () => queriesAPI.loadAll(), {
-    select: (data: IFleetQueriesResponse) => data.queries,
-  });
+    ISchedulableQuery[],
+    IQueryKeyQueriesLoadAll[]
+  >(
+    [{ scope: "queries", teamId: undefined }],
+    ({ queryKey }) => queriesAPI.loadAll(queryKey[0]),
+    {
+      select: (data) => data.queries,
+    }
+  );
 
   const { data: storedPack } = useQuery<IStoredPackResponse, Error, IPack>(
     ["stored pack"],
@@ -149,10 +160,11 @@ const EditPacksPage = ({
         router.push(PATHS.MANAGE_PACKS);
         renderFlash("success", `Successfully updated this pack.`);
       })
-      .catch((response) => {
+      .catch((e) => {
         if (
-          response.errors[0].reason.slice(0, 27) ===
-          "Error 1062: Duplicate entry"
+          getErrorReason(e, {
+            reasonIncludes: "Duplicate entry",
+          })
         ) {
           renderFlash(
             "error",
@@ -221,7 +233,7 @@ const EditPacksPage = ({
 
   return (
     <MainContent className={baseClass}>
-      <div className={`${baseClass}__wrapper`}>
+      <>
         <div className={`${baseClass}__header-links`}>
           <BackLink text="Back to packs" path={PATHS.MANAGE_PACKS} />
         </div>
@@ -242,17 +254,17 @@ const EditPacksPage = ({
             isUpdatingPack={isUpdatingPack}
           />
         )}
-        {showPackQueryEditorModal && fleetQueries && (
+        {showPackQueryEditorModal && queries && (
           <PackQueryEditorModal
             onCancel={togglePackQueryEditorModal}
             onPackQueryFormSubmit={onPackQueryEditorSubmit}
-            allQueries={fleetQueries}
+            allQueries={queries}
             editQuery={selectedPackQuery}
             packId={packId}
             isUpdatingPack={isUpdatingPack}
           />
         )}
-        {showRemovePackQueryModal && fleetQueries && (
+        {showRemovePackQueryModal && queries && (
           <RemovePackQueryModal
             onCancel={toggleRemovePackQueryModal}
             onSubmit={onRemovePackQuerySubmit}
@@ -261,7 +273,7 @@ const EditPacksPage = ({
             isUpdatingPack={isUpdatingPack}
           />
         )}
-      </div>
+      </>
     </MainContent>
   );
 };

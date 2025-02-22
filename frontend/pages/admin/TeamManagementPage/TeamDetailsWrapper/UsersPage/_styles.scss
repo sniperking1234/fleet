@@ -1,0 +1,43 @@
+.team-users {
+  &__page-description {
+    font-size: $x-small;
+    padding-bottom: $pad-medium;
+    margin: 0;
+  }
+
+  &__api-only-user {
+    @include grey-badge;
+  }
+
+  .data-table-block {
+    .data-table__table {
+      thead {
+        .name__header {
+          width: $col-md;
+        }
+
+        .role__header {
+          width: $col-md;
+        }
+
+        .actions__header {
+          width: auto;
+        }
+      }
+
+      tbody {
+        .name__cell {
+          max-width: $col-md;
+        }
+
+        .role__cell {
+          max-width: $col-md;
+        }
+
+        .actions__cell {
+          width: auto;
+        }
+      }
+    }
+  }
+}

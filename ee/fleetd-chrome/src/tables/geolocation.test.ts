@@ -45,14 +45,17 @@ describe("geolocation", () => {
       })
     );
     const rows = await db.query("select * from geolocation");
-    expect(rows).toEqual([
-      {
-        ip: "260f:1337:4a7e:e300:abcd:a98a:1234:18c",
-        city: "Vancouver",
-        country: "Canada",
-        region: "British Columbia",
-      },
-    ]);
+    expect(rows).toEqual({
+      data: [
+        {
+          ip: "260f:1337:4a7e:e300:abcd:a98a:1234:18c",
+          city: "Vancouver",
+          country: "Canada",
+          region: "British Columbia",
+        },
+      ],
+      warnings: null,
+    });
   });
 
   test("request returns incomplete data", async () => {
@@ -66,14 +69,17 @@ describe("geolocation", () => {
       })
     );
     const rows = await db.query("select * from geolocation");
-    expect(rows).toEqual([
-      {
-        ip: null,
-        city: "Vancouver",
-        country: null,
-        region: null,
-      },
-    ]);
+    expect(rows).toEqual({
+      data: [
+        {
+          ip: null,
+          city: "Vancouver",
+          country: null,
+          region: null,
+        },
+      ],
+      warnings: null,
+    });
   });
 
   test("request fails", async () => {

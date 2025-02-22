@@ -23,11 +23,8 @@ func ElementsMatchSkipID(t TestingT, listA, listB interface{}, msgAndArgs ...int
 
 	opt := cmp.FilterPath(func(p cmp.Path) bool {
 		for _, ps := range p {
-			switch ps := ps.(type) {
-			case cmp.StructField:
-				if strings.HasSuffix(ps.Name(), "ID") {
-					return true
-				}
+			if ps, ok := ps.(cmp.StructField); ok && strings.HasSuffix(ps.Name(), "ID") {
+				return true
 			}
 		}
 		return false
@@ -42,11 +39,8 @@ func ElementsMatchSkipIDAndHostCount(t TestingT, listA, listB interface{}, msgAn
 
 	opt := cmp.FilterPath(func(p cmp.Path) bool {
 		for _, ps := range p {
-			switch ps := ps.(type) {
-			case cmp.StructField:
-				if ps.Name() == "ID" || ps.Name() == "HostCount" {
-					return true
-				}
+			if ps, ok := ps.(cmp.StructField); ok && (ps.Name() == "ID" || ps.Name() == "HostCount") {
+				return true
 			}
 		}
 		return false
@@ -61,9 +55,8 @@ func ElementsMatchSkipTimestampsID(t TestingT, listA, listB interface{}, msgAndA
 
 	opt := cmp.FilterPath(func(p cmp.Path) bool {
 		for _, ps := range p {
-			switch ps := ps.(type) {
-			case cmp.StructField:
-				switch ps.Name() {
+			if ps, ok := ps.(cmp.StructField); ok {
+				switch ps.Name() { //nolint:gocritic // ignore singleCaseSwitch
 				case "ID", "UpdateCreateTimestamps", "CreateTimestamp", "UpdateTimestamp", "CreatedAt", "UpdatedAt":
 					return true
 				}
@@ -82,9 +75,8 @@ func EqualSkipTimestampsID(t TestingT, a, b interface{}, msgAndArgs ...interface
 
 	opt := cmp.FilterPath(func(p cmp.Path) bool {
 		for _, ps := range p {
-			switch ps := ps.(type) {
-			case cmp.StructField:
-				switch ps.Name() {
+			if ps, ok := ps.(cmp.StructField); ok {
+				switch ps.Name() { //nolint:gocritic // ignore singleCaseSwitch
 				case "ID", "UpdateCreateTimestamps", "CreateTimestamp", "UpdateTimestamp", "CreatedAt", "UpdatedAt":
 					return true
 				}
@@ -229,4 +221,56 @@ func formatListDiff(listA, listB interface{}, extraA, extraB []interface{}) stri
 	msg.WriteString(spewConfig.Sdump(listB))
 
 	return msg.String()
+}
+
+// QueryElementsMatch asserts that two queries slices match
+func QueryElementsMatch(t TestingT, listA, listB interface{}, msgAndArgs ...interface{}) (ok bool) {
+	t.Helper()
+
+	opt := cmp.FilterPath(func(p cmp.Path) bool {
+		for _, ps := range p {
+			if ps, ok := ps.(cmp.StructField); ok {
+				switch ps.Name() { //nolint:gocritic // ignore singleCaseSwitch
+				case "ID",
+					"UpdateCreateTimestamps",
+					"AuthorID",
+					"AuthorName",
+					"AuthorEmail",
+					"Packs",
+					"Saved":
+					return true
+				}
+			}
+		}
+		return false
+	}, cmp.Ignore())
+	return ElementsMatchWithOptions(t, listA, listB, []cmp.Option{opt}, msgAndArgs)
+}
+
+// QueriesMatch asserts that two queries 'match'.
+func QueriesMatch(t TestingT, a, b interface{}, msgAndArgs ...interface{}) (ok bool) {
+	t.Helper()
+
+	opt := cmp.FilterPath(func(p cmp.Path) bool {
+		for _, ps := range p {
+			if ps, ok := ps.(cmp.StructField); ok {
+				switch ps.Name() { //nolint:gocritic // ignore singleCaseSwitch
+				case "ID",
+					"UpdateCreateTimestamps",
+					"AuthorID",
+					"AuthorName",
+					"AuthorEmail",
+					"Packs",
+					"Saved":
+					return true
+				}
+			}
+		}
+		return false
+	}, cmp.Ignore())
+
+	if !cmp.Equal(a, b, opt) {
+		return assert.Fail(t, cmp.Diff(a, b, opt), msgAndArgs...)
+	}
+	return true
 }

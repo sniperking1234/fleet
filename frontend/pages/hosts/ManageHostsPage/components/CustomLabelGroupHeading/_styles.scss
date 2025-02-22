@@ -20,15 +20,11 @@
 
   &__field {
     position: relative;
-    &::before {
-      display: inline-block;
+
+    .icon {
       position: absolute;
-      padding: 5px 0 0 0; // centers spin
-      content: url(../assets/images/icon-search-fleet-black-16x16@2x.png);
-      transform: scale(0.5);
-      height: 20px;
-      top: 3px;
-      left: 8px;
+      left: 12px;
+      top: 12px;
     }
   }
 
@@ -37,11 +33,12 @@
     line-height: 1.5;
     background-color: $ui-light-grey;
     border: solid 1px $ui-fleet-black-10;
-    border-radius: 4px;
+    border-radius: $border-radius;
     font-size: $small;
-    padding: $pad-xsmall 12px $pad-xsmall 42px;
+    padding: 9.5px 12px 9.5px 36px;
     color: $core-fleet-blue;
     font-family: "Inter", sans-serif;
+    font-size: $x-small;
     box-sizing: border-box;
     height: 40px;
 
@@ -51,9 +48,18 @@
       color: $ui-fleet-black-50;
     }
 
-    &:focus {
+    &:focus,
+    &:hover {
       outline: none;
       border-color: $core-vibrant-blue;
+
+      + .icon {
+        svg {
+          path {
+            fill: $core-vibrant-blue;
+          }
+        }
+      }
     }
 
     &--disabled {
@@ -64,7 +70,7 @@
       color: $core-vibrant-red;
       border: 1px solid $core-vibrant-red;
       box-sizing: border-box;
-      border-radius: 4px;
+      border-radius: $border-radius;
 
       &:focus {
         border-color: $ui-error;
@@ -96,7 +102,7 @@
       margin-bottom: $pad-medium;
     }
 
-    &__hint {
+    &__help-text {
       font-size: $x-small;
       font-weight: $regular;
       line-height: 1.57;

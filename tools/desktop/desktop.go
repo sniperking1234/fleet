@@ -7,7 +7,6 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"io/ioutil"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -17,7 +16,7 @@ import (
 	"github.com/fleetdm/fleet/v4/orbit/pkg/packaging"
 	"github.com/fleetdm/fleet/v4/pkg/buildpkg"
 	"github.com/fleetdm/fleet/v4/pkg/secure"
-	"github.com/kolide/kit/version"
+	"github.com/fleetdm/fleet/v4/server/version"
 	"github.com/mitchellh/gon/package/zip"
 	"github.com/rs/zerolog"
 	zlog "github.com/rs/zerolog/log"
@@ -25,7 +24,7 @@ import (
 )
 
 func main() {
-	app := createApp(os.Stdin, os.Stdout, exitErrHandler)
+	app := createApp(os.Stdin, os.Stdout, os.Stderr, exitErrHandler)
 	app.Run(os.Args) //nolint:errcheck
 }
 
@@ -38,7 +37,7 @@ func exitErrHandler(c *cli.Context, err error) {
 	cli.OsExiter(1)
 }
 
-func createApp(reader io.Reader, writer io.Writer, exitErrHandler cli.ExitErrHandlerFunc) *cli.App {
+func createApp(reader io.Reader, stdout io.Writer, stderr io.Writer, exitErrHandler cli.ExitErrHandlerFunc) *cli.App {
 	app := cli.NewApp()
 	app.Name = "desktop"
 	app.Usage = "Tool to generate the Fleet Desktop application"
@@ -47,8 +46,8 @@ func createApp(reader io.Reader, writer io.Writer, exitErrHandler cli.ExitErrHan
 		version.PrintFull()
 	}
 	app.Reader = reader
-	app.Writer = writer
-	app.ErrWriter = writer
+	app.Writer = stdout
+	app.ErrWriter = stderr
 	app.Flags = []cli.Flag{
 		&cli.StringFlag{
 			Name:    "version",
@@ -143,7 +142,7 @@ func createMacOSApp(version, authority string, notarize bool) error {
 
 	infoFile := filepath.Join(contentsDir, "Info.plist")
 	infoPListContents := fmt.Sprintf(infoPList, bundleIdentifier, version, version)
-	if err := ioutil.WriteFile(infoFile, []byte(infoPListContents), 0o644); err != nil {
+	if err := os.WriteFile(infoFile, []byte(infoPListContents), 0o644); err != nil {
 		return fmt.Errorf("create Info.plist file %q: %w", infoFile, err)
 	}
 

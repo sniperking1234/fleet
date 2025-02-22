@@ -3,69 +3,43 @@
 .platform-wrapper {
   padding: 0; // different to pad sticky subnav properly
 
+  .component__tabs-wrapper {
+    // negate problematic sticky positioning
+    position: initial;
+    .react-tabs {
+      &__tab-list {
+        margin: 0 0 $pad-large;
+      }
+    }
+  }
+
   h1 {
     margin-bottom: $pad-small;
   }
 
   p {
-    margin-top: 0;
-  }
-
-  .body-wrap {
-    padding: 0;
-  }
-
-  &__info {
-    margin-top: $pad-medium;
-  }
-
-  &__cta {
-    font-weight: $bold;
-    padding-top: $pad-xsmall;
     margin: 0;
-  }
-
-  .fleet-checkbox {
-    display: flex;
-    align-items: center;
-  }
-
-  .form-field {
-    &--checkbox {
-      margin-bottom: $pad-medium;
-    }
-
-    &__label {
-      position: relative;
-      font-size: $x-small;
-      font-weight: $bold;
-    }
-
-    &--textarea {
-      margin-bottom: $pad-xsmall;
-    }
   }
 
   .input-field {
     &__textarea {
-      min-height: 94px;
+      min-height: 88px;
     }
 
-    &__textarea,
-    &--disabled {
+    &__textarea {
       font-family: "SourceCodePro", $monospace;
       font-weight: $bold;
       font-size: 13px;
       color: $core-fleet-blue;
       line-height: 20px;
-      margin-bottom: 0;
-      padding: $pad-medium $pad-large $pad-medium $pad-medium;
+      line-break: anywhere;
+      padding: 12px $pad-xlarge 12px $pad-medium;
     }
   }
 
   &__advanced--installer {
     .input-field {
-      height: 115px;
+      height: 105px;
     }
   }
 
@@ -76,20 +50,19 @@
   }
 
   &__copy-message {
-    font-weight: $regular;
-    vertical-align: top;
-    background-color: $ui-light-grey;
-    border: solid 1px #e2e4ea;
-    border-radius: 10px;
-    padding: 2px 6px;
+    @include copy-message;
   }
 
   .buttons {
-    display: block;
+    display: flex;
+    flex-direction: row-reverse;
     align-items: center;
-    position: absolute;
-    right: 15px;
-    top: 40px;
+    position: relative;
+    top: 28px;
+    right: 12px;
+    // prevent this element from affecting the parent label's height
+    height: 0;
+    gap: $pad-small;
 
     a {
       display: flex;
@@ -99,12 +72,6 @@
     img {
       width: 16px;
       height: 16px;
-    }
-  }
-
-  &__run-osquery-input {
-    .buttons {
-      top: 12px;
     }
   }
 
@@ -125,45 +92,35 @@
     }
   }
 
-  &__advanced {
-    padding-top: 6px;
-    .reveal-button {
-      margin: 8px 0;
-    }
-  }
-
-  &__advanced--heading {
+  &__advanced--heading,
+  &__chromeos--heading {
     font-weight: $bold;
-    margin-bottom: $pad-small;
   }
 
-  &__advanced--text {
-    font-weight: normal;
+  &__chromeos--info {
+    display: flex;
+    flex-direction: column;
+    gap: 0.5rem;
   }
 
-  &__advanced--installer {
-    p {
-      margin: 0;
-    }
-  }
+  &__chromeos-policy-for-extension {
+    height: 230px;
 
-  &__advanced--osqueryd {
-    .buttons {
-      top: 73px;
+    .input-field {
+      &__textarea {
+        height: 190px;
+      }
+      &--disabled {
+        height: 190px;
+      }
     }
   }
 
   .download-certificate--tooltip {
     margin-bottom: 0;
-    div {
-      display: inline;
-    }
   }
 
   &__copy-message {
-    background-color: $ui-light-grey;
-    border: solid 1px #e2e4ea;
-    border-radius: 10px;
-    padding: 2px 6px;
+    @include copy-message;
   }
 }

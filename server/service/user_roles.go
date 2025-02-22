@@ -15,9 +15,9 @@ type applyUserRoleSpecsResponse struct {
 	Err error `json:"error,omitempty"`
 }
 
-func (r applyUserRoleSpecsResponse) error() error { return r.Err }
+func (r applyUserRoleSpecsResponse) Error() error { return r.Err }
 
-func applyUserRoleSpecsEndpoint(ctx context.Context, request interface{}, svc fleet.Service) (errorer, error) {
+func applyUserRoleSpecsEndpoint(ctx context.Context, request interface{}, svc fleet.Service) (fleet.Errorer, error) {
 	req := request.(*applyUserRoleSpecsRequest)
 	err := svc.ApplyUserRolesSpecs(ctx, *req.Spec)
 	if err != nil {
@@ -47,6 +47,12 @@ func (svc *Service) ApplyUserRolesSpecs(ctx context.Context, specs fleet.UsersRo
 		for _, team := range spec.Teams {
 			t, err := svc.ds.TeamByName(ctx, team.Name)
 			if err != nil {
+				if fleet.IsNotFound(err) {
+					return &fleet.BadRequestError{
+						Message:     err.Error(),
+						InternalErr: err,
+					}
+				}
 				return err
 			}
 			teams = append(teams, fleet.UserTeam{

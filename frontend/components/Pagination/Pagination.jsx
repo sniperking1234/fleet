@@ -6,9 +6,11 @@ import FleetIcon from "components/icons/FleetIcon";
 
 const baseClass = "pagination";
 
-// TODO: Refactor to typescript
-// Already seeing issues with prop types (currentPage passed through as string instead of number)
-
+/**
+ * WARNING: DEPRICATED:
+ * This pagination component is DEPRICATED. It is being kept around until we replace its
+ * use. For now use the Pagination component in the pages/ManageControlsPage/components.
+ */
 class Pagination extends PureComponent {
   static propTypes = {
     currentPage: PropTypes.number,
@@ -23,6 +25,10 @@ class Pagination extends PureComponent {
   };
 
   disableNext = () => {
+    // NOTE: Disable next page is passed through from api metadata
+    if (this.props.disableNextPage !== undefined) {
+      return this.props.disableNextPage;
+    }
     // NOTE: not sure why resultsOnCurrentPage is getting assigned undefined.
     // but this seems to work when there is no data in the table.
     return (

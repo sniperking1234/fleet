@@ -9,34 +9,198 @@ module.exports = {
 
   inputs: {
     dry: { type: 'boolean', description: 'Whether to make this a dry run.  (.sailsrc file will not be overwritten.  HTML files will not be generated.)' },
-    skipGithubRequests: { type: 'boolean', description: 'Whether to minimize requests to the GitHub API which usually can be skipped during local development, such as requests used for fetching GitHub avatar URLs'},
     githubAccessToken: { type: 'string', description: 'If provided, A GitHub token will be used to authenticate requests to the GitHub API'},
   },
 
 
-  fn: async function ({ dry, skipGithubRequests, githubAccessToken }) {
-
+  fn: async function ({ dry, githubAccessToken }) {
     let path = require('path');
     let YAML = require('yaml');
-
+    let util = require('util');
     // FUTURE: If we ever need to gather source files from other places or branches, etc, see git history of this file circa 2021-05-19 for an example of a different strategy we might use to do that.
     let topLvlRepoPath = path.resolve(sails.config.appPath, '../');
 
     // The data we're compiling will get built into this dictionary and then written on top of the .sailsrc file.
     let builtStaticContent = {};
+    let rootRelativeUrlPathsSeen = [];
+    let baseHeadersForGithubRequests;
+
+    if(githubAccessToken) {// If a github token was provided, set headers for requests to GitHub.
+      baseHeadersForGithubRequests = {
+        'User-Agent': 'Fleet-Standard-Query-Library',
+        'Accept': 'application/vnd.github.v3+json',
+        'Authorization': `token ${githubAccessToken}`,
+      };
+    } else {
+      sails.log('Skipping GitHub API requests for contributer profiles and ritual validation.\nNOTE: The contributors in the standard query library will be populated with fake data.\nTo see how the standard query library will look on fleetdm.com, pass a GitHub access token into this script with the `--githubAccessToken={YOUR_GITHUB_ACCESS_TOKEN}` flag. \n Note: This script can take up to 30s to run.');
+    }//ﬁ
 
     await sails.helpers.flow.simultaneously([
-      async()=>{// Parse query library from YAML and prepare to bake them into the Sails app's configuration.
-        let RELATIVE_PATH_TO_QUERY_LIBRARY_YML_IN_FLEET_REPO = 'docs/01-Using-Fleet/standard-query-library/standard-query-library.yml';
+      async()=>{// Parse queries.yml library (Informational queries and host vital queries) from YAML and prepare to bake them into the Sails app's configuration.
+        let RELATIVE_PATH_TO_QUERY_LIBRARY_YML_IN_FLEET_REPO = 'docs/queries.yml';
         let yaml = await sails.helpers.fs.read(path.join(topLvlRepoPath, RELATIVE_PATH_TO_QUERY_LIBRARY_YML_IN_FLEET_REPO)).intercept('doesNotExist', (err)=>new Error(`Could not find standard query library YAML file at "${RELATIVE_PATH_TO_QUERY_LIBRARY_YML_IN_FLEET_REPO}".  Was it accidentally moved?  Raw error: `+err.message));
-
-        let queriesWithProblematicResolutions = [];
+        let linesInYamlFile = yaml.split('\n');
+        let queriesWithProblematicDiscovery = [];
         let queriesWithProblematicContributors = [];
         let queriesWithProblematicTags = [];
         let queries = YAML.parseAllDocuments(yaml).map((yamlDocument)=>{
           let query = yamlDocument.toJSON().spec;
           query.kind = yamlDocument.toJSON().kind;
           query.slug = _.kebabCase(query.name);// « unique slug to use for routing to this query's detail page
+
+          // Determine the line in the yaml that this query starts on.
+          // this will allow us to link users directly to the query's position in the YAML file (currently >1500 lines) when users want to make a change.
+          let lineWithTheQueriesNameKey = _.find(linesInYamlFile, (line)=>{
+            return line.includes('name: '+query.name);
+          });
+          let lineNumberForEdittingThisQuery = linesInYamlFile.indexOf(lineWithTheQueriesNameKey);
+          query.lineNumberInYaml = lineNumberForEdittingThisQuery; // Set the line number for edits.
+
+          // Remove the platform name from query names. This allows us to keep queries at their existing URLs while hiding them in the UI.
+          query.name = query.name.replace(/\s\(macOS\)|\(Windows\)|\(Linux\)|\(Chrome\)|\(macOS\/Linux\)$/, '');
+
+
+          if ((query.discovery !== undefined && !_.isString(query.discovery)) || (query.kind !== 'built-in' && _.isString(query.discovery))) {
+            queriesWithProblematicDiscovery.push(query);
+          }
+
+          if (query.tags) {
+            if(!_.isString(query.tags)) {
+              queriesWithProblematicTags.push(query);
+            } else {
+              // Splitting tags into an array to format them.
+              let tagsToFormat = query.tags.split(',');
+              let formattedTags = [];
+              for (let tag of tagsToFormat) {
+                if(tag !== '') {// « Ignoring any blank tags caused by trailing commas in the YAML.
+                  // Removing any extra whitespace from tags and changing them to be in lower case.
+                  formattedTags.push(_.trim(tag.toLowerCase()));
+                }
+              }
+              // Removing any duplicate tags.
+              query.tags = _.uniq(formattedTags);
+            }
+          } else {
+            query.tags = []; // « if there are no tags, we set query.tags to an empty array so it is always the same data type.
+          }
+
+          // GitHub usernames may only contain alphanumeric characters or single hyphens, and cannot begin or end with a hyphen.
+          if(query.kind !== 'built-in') {// Note: queries with kind: built-in do not have a contributors value.
+            if (!query.contributors || (query.contributors !== undefined && !_.isString(query.contributors)) || query.contributors.split(',').some((contributor) => contributor.match('^[^A-za-z0-9].*|[^A-Za-z0-9-]|.*[^A-za-z0-9]$'))) {
+              queriesWithProblematicContributors.push(query);
+            }
+          }
+
+          return query;
+        });
+        // Report any errors that were detected along the way in one fell swoop to avoid endless resubmitting of PRs.
+        if (queriesWithProblematicDiscovery.length >= 1) {
+          throw new Error('Failed parsing YAML for query library: The "discovery" of a query should either be absent (undefined) or a single string (not a list of strings).  And "discovery" should only be present when a query\'s kind is "built-in".  But one or more queries have an invalid "discovery": ' + _.pluck(queriesWithProblematicDiscovery, 'slug').sort());
+        }//•
+        if (queriesWithProblematicTags.length >= 1) {
+          throw new Error('Failed parsing YAML for query library: The "tags" of a query should either be absent (undefined) or a single string (not a list of strings). "tags" should be be be seperated by a comma.  But one or more queries have invalid "tags": ' + _.pluck(queriesWithProblematicTags, 'slug').sort());
+        }
+        // Assert uniqueness of slugs.
+        if (queries.length !== _.uniq(_.pluck(queries, 'slug')).length) {
+          throw new Error('Failed parsing YAML for query library: Queries as currently named would result in colliding (duplicate) slugs.  To resolve, rename the queries whose names are too similar.  Note the duplicates: ' + _.pluck(queries, 'slug').sort());
+        }//•
+        // Report any errors that were detected along the way in one fell swoop to avoid endless resubmitting of PRs.
+        if (queriesWithProblematicContributors.length >= 1) {
+          throw new Error('Failed parsing YAML for query library: The "contributors" of a query should be a single string of valid GitHub user names (e.g. "zwass", or "zwass,noahtalerman,mikermcneil").  But one or more queries have an invalid "contributors" value: ' + _.pluck(queriesWithProblematicContributors, 'slug').sort());
+        }//•
+
+        // Get a distinct list of all GitHub usernames from all of our queries.
+        // Map all queries to build a list of unique contributor names then build a dictionary of user profile information from the GitHub Users API
+        const githubUsernames = queries.reduce((list, query) => {
+          if (!queriesWithProblematicContributors.find((element) => element.slug === query.slug) && query.kind !== 'built-in') {
+            list = _.union(list, query.contributors.split(','));
+          }
+          return list;
+        }, []);
+
+        let githubDataByUsername = {};
+
+        // If a GitHub access token was provided, validate all users listed in the standard query library YAML.
+        if(githubAccessToken) {
+          await sails.helpers.flow.simultaneouslyForEach(githubUsernames, async(username)=>{
+            githubDataByUsername[username] = await sails.helpers.http.get.with({
+              url: 'https://api.github.com/users/' + encodeURIComponent(username),
+              headers: baseHeadersForGithubRequests,
+            }).intercept((err)=>{
+              return new Error(`When validating users in standard-query-library.yml, an error when a request was sent to GitHub get the information about a user (username: ${username}). Error: ${err.stack}`);
+            });
+          });//∞
+          // Now expand queries with relevant profile data for the contributors.
+          for (let query of queries) {
+            // Skip built-in queries.
+            if(query.kind === 'built-in'){
+              continue;
+            }
+            let usernames = query.contributors.split(',');
+            let contributorProfiles = [];
+            for (let username of usernames) {
+              contributorProfiles.push({
+                name: githubDataByUsername[username].name,
+                handle: githubDataByUsername[username].login,
+                avatarUrl: githubDataByUsername[username].avatar_url,
+                htmlUrl: githubDataByUsername[username].html_url,
+              });
+            }
+            query.contributors = contributorProfiles;
+          }
+        } else {// Otherwise, use the Github username as contributor's names and handles and use fake profile pictures.
+          for (let query of queries) {
+            // Skip host vital queries.
+            if(query.kind === 'built-in'){
+              continue;
+            }
+            let usernames = query.contributors.split(',');
+            let contributorProfiles = [];
+            for (let username of usernames) {
+              contributorProfiles.push({
+                name: username,
+                handle: username,
+                avatarUrl: 'https://placekitten.com/200/200',
+                htmlUrl: 'https://github.com/'+encodeURIComponent(username),
+              });
+            }
+            query.contributors = contributorProfiles;
+          }
+        }
+
+        // Attach to what will become configuration for the Sails app.
+        builtStaticContent.queries = queries;
+        builtStaticContent.queryLibraryYmlRepoPath = RELATIVE_PATH_TO_QUERY_LIBRARY_YML_IN_FLEET_REPO;
+      },
+      async()=>{
+        // Parse query library from YAML and prepare to bake the policies into the Sails app's configuration.
+        // Note: we will only be using the policies from the standard query library YAML.
+        let RELATIVE_PATH_TO_POLICY_LIBRARY_YML_IN_FLEET_REPO = 'docs/01-Using-Fleet/standard-query-library/standard-query-library.yml';
+        // let RELATIVE_PATH_TO_QUERY_LIBRARY_YML_IN_FLEET_REPO = 'docs/queries.yml';
+        let yaml = await sails.helpers.fs.read(path.join(topLvlRepoPath, RELATIVE_PATH_TO_POLICY_LIBRARY_YML_IN_FLEET_REPO)).intercept('doesNotExist', (err)=>new Error(`Could not find standard query library YAML file at "${RELATIVE_PATH_TO_POLICY_LIBRARY_YML_IN_FLEET_REPO}".  Was it accidentally moved?  Raw error: `+err.message));
+        let linesInYamlFile = yaml.split('\n');
+        let queriesWithProblematicResolutions = [];
+        let queriesWithProblematicContributors = [];
+        let queriesWithProblematicTags = [];
+        let policies = YAML.parseAllDocuments(yaml).map((yamlDocument)=>{
+          let query = yamlDocument.toJSON().spec;
+          query.kind = yamlDocument.toJSON().kind;
+          // If this query is not a policy, we will skip it and return undefined.
+          if(query.kind === 'query'){
+            return undefined;
+          }
+          // Determine the line in the yaml that this query starts on.
+          // this will allow us to link users directly to the query's position in the YAML file (currently >1500 lines) when users want to make a change.
+          let lineWithTheQueriesNameKey = _.find(linesInYamlFile, (line)=>{
+            return line.includes('name: '+query.name);
+          });
+          let lineNumberForEdittingThisQuery = linesInYamlFile.indexOf(lineWithTheQueriesNameKey);
+          query.lineNumberInYaml = lineNumberForEdittingThisQuery; // Set the line number for edits.
+
+
+          query.slug = _.kebabCase(query.name);// « unique slug to use for routing to this query's detail page
+          // Remove the platform name from query names. This allows us to keep queries at their existing URLs while hiding them in the UI.
+          query.name = query.name.replace(/\s\(macOS\)|\(Windows\)|\(Linux\)$/, '');
           if ((query.resolution !== undefined && !_.isString(query.resolution)) || (query.kind !== 'policy' && _.isString(query.resolution))) {
             // console.log(typeof query.resolution);
             queriesWithProblematicResolutions.push(query);
@@ -56,6 +220,8 @@ module.exports = {
                   // If a query has a 'requires MDM' tag, we'll set requiresMDM to true for this query, and we'll ingore this tag.
                   if(_.trim(tag.toLowerCase()) === 'mdm required'){
                     query.requiresMdm = true;
+                  } else if(_.trim(tag.toLowerCase()) === 'critical') {
+                    query.critical = true;
                   } else {
                     // Removing any extra whitespace from tags and changing them to be in lower case.
                     formattedTags.push(_.trim(tag.toLowerCase()));
@@ -75,6 +241,9 @@ module.exports = {
           }
 
           return query;
+        }).filter((query)=>{
+          // Remove all queries we previously returned undefined for. Otherwise, they will cause the validation to always fail.
+          return query !== undefined;
         });
         // Report any errors that were detected along the way in one fell swoop to avoid endless resubmitting of PRs.
         if (queriesWithProblematicResolutions.length >= 1) {
@@ -84,8 +253,8 @@ module.exports = {
           throw new Error('Failed parsing YAML for query library: The "tags" of a query should either be absent (undefined) or a single string (not a list of strings). "tags" should be be be seperated by a comma.  But one or more queries have invalid "tags": ' + _.pluck(queriesWithProblematicTags, 'slug').sort());
         }
         // Assert uniqueness of slugs.
-        if (queries.length !== _.uniq(_.pluck(queries, 'slug')).length) {
-          throw new Error('Failed parsing YAML for query library: Queries as currently named would result in colliding (duplicate) slugs.  To resolve, rename the queries whose names are too similar.  Note the duplicates: ' + _.pluck(queries, 'slug').sort());
+        if (policies.length !== _.uniq(_.pluck(policies, 'slug')).length) {
+          throw new Error('Failed parsing YAML for query library: Queries as currently named would result in colliding (duplicate) slugs.  To resolve, rename the queries whose names are too similar.  Note the duplicates: ' + _.pluck(policies, 'slug').sort());
         }//•
         // Report any errors that were detected along the way in one fell swoop to avoid endless resubmitting of PRs.
         if (queriesWithProblematicContributors.length >= 1) {
@@ -94,7 +263,7 @@ module.exports = {
 
         // Get a distinct list of all GitHub usernames from all of our queries.
         // Map all queries to build a list of unique contributor names then build a dictionary of user profile information from the GitHub Users API
-        const githubUsernames = queries.reduce((list, query) => {
+        const githubUsernames = policies.reduce((list, query) => {
           if (!queriesWithProblematicContributors.find((element) => element.slug === query.slug)) {
             list = _.union(list, query.contributors.split(','));
           }
@@ -103,47 +272,18 @@ module.exports = {
 
         let githubDataByUsername = {};
 
-        if(skipGithubRequests) {// If the --skipGithubRequests flag was provided, we'll skip querying GitHubs API
-          sails.log('Skipping GitHub API requests for contributer profiles.\nNOTE: The contributors in the standard query library will be populated with fake data. To see how the standard query library will look on fleetdm.com, run this script without the `--skipGithubRequests` flag.');
-          // Because we're not querying GitHub to get the real names for contributer profiles, we'll use their GitHub username as their name and their handle
-          for (let query of queries) {
-            let usernames = query.contributors.split(',');
-            let contributorProfiles = [];
-            for (let username of usernames) {
-              contributorProfiles.push({
-                name: username,
-                handle: username,
-                avatarUrl: 'https://placekitten.com/200/200',
-                htmlUrl: 'https://github.com/'+encodeURIComponent(username),
-              });
-            }
-            query.contributors = contributorProfiles;
-          }
-        } else {// If the --skipGithubRequests flag was not provided, we'll query GitHub's API to get additional information about each contributor.
-
-          let baseHeadersForGithubRequests = {
-            'User-Agent': 'Fleet-Standard-Query-Library',
-            'Accept': 'application/vnd.github.v3+json',
-          };
-
-          if(githubAccessToken) {
-            // If a GitHub access token was provided, add it to the baseHeadersForGithubRequests object.
-            baseHeadersForGithubRequests['Authorization'] = `token ${githubAccessToken}`;
-          }
+        // If a GitHub access token was provided, validate all users listed in the standard query library YAML.
+        if(githubAccessToken) {
           await sails.helpers.flow.simultaneouslyForEach(githubUsernames, async(username)=>{
             githubDataByUsername[username] = await sails.helpers.http.get.with({
               url: 'https://api.github.com/users/' + encodeURIComponent(username),
               headers: baseHeadersForGithubRequests,
-            }).catch((err)=>{// If the above GET requests return a non 200 response we'll look for signs that the user has hit their GitHub API rate limit.
-              if (err.raw.statusCode === 403 && err.raw.headers['x-ratelimit-remaining'] === '0') {// If the user has reached their GitHub API rate limit, we'll throw an error that suggest they run this script with the `--skipGithubRequests` flag.
-                throw new Error('GitHub API rate limit exceeded. If you\'re running this script in a development environment, use the `--skipGithubRequests` flag to skip querying the GitHub API. See full error for more details:\n'+err);
-              } else {// If the error was not because of the user's API rate limit, we'll display the full error
-                throw err;
-              }
+            }).intercept((err)=>{
+              return new Error(`When validating users in standard-query-library.yml, an error when a request was sent to GitHub get the information about a user (username: ${username}). Error: ${err.stack}`);
             });
           });//∞
           // Now expand queries with relevant profile data for the contributors.
-          for (let query of queries) {
+          for (let query of policies) {
             let usernames = query.contributors.split(',');
             let contributorProfiles = [];
             for (let username of usernames) {
@@ -156,11 +296,25 @@ module.exports = {
             }
             query.contributors = contributorProfiles;
           }
+        } else {// Otherwise, use the Github username as contributor's names and handles and use fake profile pictures.
+          for (let query of policies) {
+            let usernames = query.contributors.split(',');
+            let contributorProfiles = [];
+            for (let username of usernames) {
+              contributorProfiles.push({
+                name: username,
+                handle: username,
+                avatarUrl: 'https://placekitten.com/200/200',
+                htmlUrl: 'https://github.com/'+encodeURIComponent(username),
+              });
+            }
+            query.contributors = contributorProfiles;
+          }
         }
 
         // Attach to what will become configuration for the Sails app.
-        builtStaticContent.queries = queries;
-        builtStaticContent.queryLibraryYmlRepoPath = RELATIVE_PATH_TO_QUERY_LIBRARY_YML_IN_FLEET_REPO;
+        builtStaticContent.policies = policies;
+        builtStaticContent.policyLibraryYmlRepoPath = RELATIVE_PATH_TO_POLICY_LIBRARY_YML_IN_FLEET_REPO;
       },
       async()=>{// Parse markdown pages, compile & generate HTML files, and prepare to bake directory trees into the Sails app's configuration.
         let APP_PATH_TO_COMPILED_PAGE_PARTIALS = 'views/partials/built-from-markdown';
@@ -175,7 +329,7 @@ module.exports = {
           'handbook/': { urlPrefix: '/handbook', },
           'articles/': { urlPrefix: '/articles', }
         };
-        let rootRelativeUrlPathsSeen = [];
+
         for (let sectionRepoPath of Object.keys(SECTION_INFOS_BY_SECTION_REPO_PATHS)) {// FUTURE: run this in parallel
           let thinTree = await sails.helpers.fs.ls.with({
             dir: path.join(topLvlRepoPath, sectionRepoPath),
@@ -190,11 +344,20 @@ module.exports = {
             // > Inspired by https://github.com/uncletammy/doc-templater/blob/2969726b598b39aa78648c5379e4d9503b65685e/lib/compile-markdown-tree-from-remote-git-repo.js#L308-L313
             // > And https://github.com/uncletammy/doc-templater/blob/2969726b598b39aa78648c5379e4d9503b65685e/lib/compile-markdown-tree-from-remote-git-repo.js#L107-L132
             let pageRelSourcePath = path.relative(path.join(topLvlRepoPath, sectionRepoPath), path.resolve(pageSourcePath));
-            let pageUnextensionedLowercasedRelPath = (
+            let pageUnextensionedUnwhitespacedLowercasedRelPath = (
               pageRelSourcePath
               .replace(/(^|\/)([^/]+)\.[^/]*$/, '$1$2')
-              .split(/\//).map((fileOrFolderName) => fileOrFolderName.toLowerCase()).join('/')
+              .split(/\//).map((fileOrFolderName) => fileOrFolderName.toLowerCase().replace(/\s+/g, '-')).join('/')
             );
+
+            // If this page is in the docs/contributing/ folder, skip it.
+            if(sectionRepoPath === 'docs/' && _.startsWith(pageUnextensionedUnwhitespacedLowercasedRelPath, 'contributing/')){
+              continue;
+            }
+            // Skip pages in folders starting with an underscore character.
+            if(sectionRepoPath === 'docs/' &&  _.startsWith(pageRelSourcePath.split(/\//).slice(-2)[0], '_')){
+              continue;
+            }
             let RX_README_FILENAME = /\/?readme\.?m?d?$/i;// « for matching `readme` or `readme.md` (case-insensitive) at the end of a file path
 
             // Determine this page's default (fallback) display title.
@@ -219,7 +382,7 @@ module.exports = {
               (
                 SECTION_INFOS_BY_SECTION_REPO_PATHS[sectionRepoPath].urlPrefix +
                 '/' + (
-                  pageUnextensionedLowercasedRelPath
+                  pageUnextensionedUnwhitespacedLowercasedRelPath
                   .split(/\//).map((fileOrFolderName) => encodeURIComponent(fileOrFolderName.replace(/^[0-9]+[\-]+/,''))).join('/')// « Get URL-friendly by encoding characters and stripping off ordering prefixes (like the "1-" in "1-Using-Fleet") for all folder and file names in the path.
                 )
               ).replace(RX_README_FILENAME, '')// « Interpret README files as special and map it to the URL representing its containing folder.
@@ -247,32 +410,18 @@ module.exports = {
               if(mdString.match(/[A-Z0-9._%+-]+@fleetdm\.com/gi)) {
                 throw new Error(`A Markdown file (${pageSourcePath}) contains a @fleetdm.com email address. To resolve this error, remove the email address in that file or change it to be an @example.com email address and try running this script again.`);
               }
-              mdString = mdString.replace(/(```)([a-zA-Z0-9\-]*)(\s*\n)/g, '$1\n' + '<!-- __LANG=%' + '$2' + '%__ -->' + '$3'); // « Based on the github-flavored markdown's language annotation, (e.g. ```js```) add a temporary marker to code blocks that can be parsed post-md-compilation when this is HTML.  Note: This is an HTML comment because it is easy to over-match and "accidentally" add it underneath each code block as well (being an HTML comment ensures it doesn't show up or break anything).  For more information, see https://github.com/uncletammy/doc-templater/blob/2969726b598b39aa78648c5379e4d9503b65685e/lib/compile-markdown-tree-from-remote-git-repo.js#L198-L202
+              // Look for multi-line HTML comments starting after lists without a blank newline. (The opening comment block is parsed as part of the list item preceeding it, and the closing block will be parsed as a paragraph)
+              if(mdString.match(/(-|\d\.)\s.*\n<!-+\n/g)) {
+                throw new Error(`A Markdown file (${pageSourcePath}) contains an HTML comment directly after a list that will cause rendering issues when converted to HTML. To resolve this error, add a blank newline before the start of the HTML comment in this file.`);
+              }
+              // Look for anything outside of code blocks in markdown content that could be interpreted as a Vue template when converted to HTML (e.g. {{ foo }}). If any are found, throw an error.
+              if (mdString.match(/(?<!```.*)(?<!`){{([^}]+)}}(?!`)/gis)) {
+                throw new Error(`A Markdown file (${pageSourcePath}) contains a Vue template (${mdString.match(/(?<!```.*)(?<!`){{([^}]+)}}(?!`)/gis)[0]}) that will cause client-side JavaScript errors when converted to HTML. To resolve this error, change or remove the double curly brackets in this file.`);
+              }
+
               mdString = mdString.replace(/(<call-to-action[\s\S]+[^>\n+])\n+(>)/g, '$1$2'); // « Removes any newlines that might exist before the closing `>` when the <call-to-action> compontent is added to markdown files.
+              // [?] Looking for code that used to be here related to syntax highlighting?  Please see https://github.com/fleetdm/fleet/pull/14124/files  -mikermcneil, 2023-09-25
               let htmlString = await sails.helpers.strings.toHtml(mdString);
-              htmlString = (// « Add the appropriate class to the `<code>` based on the temporary "LANG" markers that were just added above
-                htmlString
-                .replace(// Interpret `js` as `javascript`
-                  // $1     $2     $3   $4
-                  /(<code)([^>]*)(>\s*)(\&lt;!-- __LANG=\%js\%__ --\&gt;)\s*/gm,
-                  '$1 class="javascript"$2$3'
-                )
-                .replace(// Interpret `sh` and `bash` as `bash`
-                  // $1     $2     $3   $4
-                  /(<code)([^>]*)(>\s*)(\&lt;!-- __LANG=\%(bash|sh)\%__ --\&gt;)\s*/gm,
-                  '$1 class="bash"$2$3'
-                )
-                .replace(// When unspecified, default to `text`
-                  // $1     $2     $3   $4
-                  /(<code)([^>]*)(>\s*)(\&lt;!-- __LANG=\%\%__ --\&gt;)\s*/gm,
-                  '$1 class="nohighlight"$2$3'
-                )
-                .replace(// Finally, nab the rest, leaving the code language as-is.
-                  // $1     $2     $3   $4               $5    $6
-                  /(<code)([^>]*)(>\s*)(\&lt;!-- __LANG=\%)([^%]+)(\%__ --\&gt;)\s*/gm,
-                  '$1 class="$5"$2$3'
-                )
-              );
               // Throw an error if the compiled Markdown contains nested codeblocks (nested codeblocks meaning 3 backtick codeblocks nested inside a 4 backtick codeblock, or vice versa). Note: We're checking this after the markdown has been compiled because backticks (`) within codeblocks will be replaced with HTML entities (&#96;) and nested triple backticks can be easy to overmatch.
               if(htmlString.match(/(&#96;){3,4}[\s\S]+(&#96;){3}/g)){
                 throw new Error('The compiled markdown has a codeblock (\`\`\`) nested inside of another codeblock (\`\`\`\`) at '+pageSourcePath+'. To resolve this error, remove the codeblock nested inside another codeblock from this file.');
@@ -288,9 +437,16 @@ module.exports = {
                 // ```
                 let referencedPageSourcePath = path.resolve(path.join(topLvlRepoPath, sectionRepoPath, pageRelSourcePath), '../', oldRelPath);
                 let possibleReferencedUrlHash = oldRelPath.match(/(\.md#)([^/]*$)/) ? oldRelPath.match(/(\.md#)([^/]*$)/)[2] : false;
+                // Throw an error if any relative links containing hash links are missing the Markdown page's extension.
+                let pageContainsInvalidRelativeHashLink = oldRelPath.match(/[^(\.md)]#([^/]*$)/);
+                if(pageContainsInvalidRelativeHashLink){
+                  throw new Error(`Could not build HTML partials from Markdown. A page (${pageRelSourcePath}) contains an invalid relative Markdown link (${hrefString.replace(/^href=/, '')}). To resolve, make sure all relative links on this page that link to a specific section include the Markdown page extension (.md) and try running this script again.`);
+                }
                 let referencedPageNewUrl = 'https://fleetdm.com/' + (
-                  (path.relative(topLvlRepoPath, referencedPageSourcePath).replace(/(^|\/)([^/]+)\.[^/]*$/, '$1$2').split(/\//).map((fileOrFolderName) => fileOrFolderName.toLowerCase()).join('/'))
-                  .split(/\//).map((fileOrFolderName) => encodeURIComponent(fileOrFolderName.replace(/^[0-9]+[\-]+/,''))).join('/')
+                  (path.relative(topLvlRepoPath, referencedPageSourcePath).replace(/(^|\/)([^/]+)\.[^/]*$/, '$1$2').split(/\//)
+                  .map((fileOrFolderNameWithPossibleUrlEncodedSpaces) => fileOrFolderNameWithPossibleUrlEncodedSpaces.toLowerCase().replace(/%20/g, '-'))// « Replaces url-encoded spaces with dashes to support relative links to folders with spaces on Github.com and the Fleet website.
+                  .map((fileOrFolderNameWithPossibleSpaces) => fileOrFolderNameWithPossibleSpaces.toLowerCase().replace(/\s/g, '-')).join('/'))// « Replaces spaces in folder names with dashes to support relative links to folders with spaces on Fleet website.
+                  .split(/\//).map((fileOrFolderNameWithNoSpaces) => encodeURIComponent(fileOrFolderNameWithNoSpaces.replace(/^[0-9]+[\-]+/,''))).join('/')
                 ).replace(RX_README_FILENAME, '');
                 if(possibleReferencedUrlHash) {
                   referencedPageNewUrl = referencedPageNewUrl + '#' + encodeURIComponent(possibleReferencedUrlHash);
@@ -304,8 +460,8 @@ module.exports = {
                 // Check if this is an external link (like https://google.com) but that is ALSO not a link
                 // to some page on the destination site where this will be hosted, like `(*.)?fleetdm.com`.
                 // If external, add target="_blank" so the link will open in a new tab.
-                // Note: links to blog.fleetdm.com will be treated as an external link.
-                let isExternal = ! hrefString.match(/^href=\"https?:\/\/([^\.|blog]+\.)*fleetdm\.com/g);// « FUTURE: make this smarter with sails.config.baseUrl + _.escapeRegExp()
+                // Note: links to trust.fleetdm.com and blog.fleetdm.com will be treated as an external link.
+                let isExternal = ! hrefString.match(/^href=\"https?:\/\/([^\.|trust|blog]+\.)*fleetdm\.com/g);// « FUTURE: make this smarter with sails.config.baseUrl + _.escapeRegExp()
                 // Check if this link is to fleetdm.com or www.fleetdm.com.
                 let isBaseUrl = hrefString.match(/^(href="https?:\/\/)([^\.]+\.)*fleetdm\.com"$/g);
                 if (isExternal) {
@@ -318,7 +474,7 @@ module.exports = {
                   if (isBaseUrl) {
                     return hrefString.replace(/href="https?:\/\//, '').replace(/([^\.]+\.)*fleetdm\.com/, 'href="/');
                   } else {
-                    return hrefString.replace(/href="https?:\/\//, '').replace(/^fleetdm\.com/, 'href="');
+                    return hrefString.replace(/href="https?:\/\//, '').replace(/^([^\.]+\.)*fleetdm\.com/, 'href="');
                   }
                 }
 
@@ -375,9 +531,11 @@ module.exports = {
               // >   <meta name="foo" value="bar">
               // >   <meta name="title" value="Sth with punctuATION and weird CAPS ... but never this long, please">
               // >   ```
+              // > Note: These meta tags are parsed from the HTML generated from markdown to prevent reading <meta> tags in code examples.
+              // > This works because HTML in Markdown files is added as-is, while any <meta> tags in codeblocks would have their brackets replaced with HTML entities when they are converted to HTML.
               let embeddedMetadata = {};
               try {
-                for (let tag of (mdString.match(/<meta[^>]*>/igm)||[])) {
+                for (let tag of (htmlString.match(/<meta[^>]*>/igm)||[])) {
                   let name = tag.match(/name="([^">]+)"/i)[1];
                   let value = tag.match(/value="([^">]+)"/i)[1];
                   embeddedMetadata[name] = value;
@@ -390,11 +548,29 @@ module.exports = {
               }//ﬁ
 
               // Get last modified timestamp using git, and represent it as a JS timestamp.
-              // > Inspired by https://github.com/uncletammy/doc-templater/blob/2969726b598b39aa78648c5379e4d9503b65685e/lib/compile-markdown-tree-from-remote-git-repo.js#L265-L273
-              let lastModifiedAt = (new Date((await sails.helpers.process.executeCommand.with({
-                command: `git log -1 --format="%ai" '${path.relative(topLvlRepoPath, pageSourcePath)}'`,
-                dir: topLvlRepoPath,
-              })).stdout)).getTime();
+              let lastModifiedAt;
+              if(!githubAccessToken) {
+                lastModifiedAt = Date.now();
+              } else if(process.env.GITHUB_REF_NAME && process.env.GITHUB_REF_NAME === 'main') {// Only add lastModifiedAt timestamps if this test is running on the main branch
+                let responseData = await sails.helpers.http.get.with({// [?]: https://docs.github.com/en/rest/commits/commits?apiVersion=2022-11-28#list-commits
+                  url: 'https://api.github.com/repos/fleetdm/fleet/commits',
+                  data: {
+                    path: path.join(sectionRepoPath, pageRelSourcePath),
+                    page: 1,
+                    per_page: 1,//eslint-disable-line camelcase
+                  },
+                  headers: baseHeadersForGithubRequests,
+                }).intercept((err)=>{
+                  return new Error(`When getting the commit history for ${path.join(sectionRepoPath, pageRelSourcePath)} to get a lastModifiedAt timestamp, an error occured.`, err);
+                });
+                // The value we'll use for the lastModifiedAt timestamp will be date value of the `commiter` property of the `commit` we got in the API response from github.
+                let mostRecentCommitToThisFile = responseData[0];
+                if(!mostRecentCommitToThisFile.commit || !mostRecentCommitToThisFile.commit.committer) {
+                  // Throw an error if the the response from GitHub is missing a commit or commiter.
+                  throw new Error(`When getting the commit history for ${path.join(sectionRepoPath, pageRelSourcePath)} to get a lastModifiedAt timestamp, the response from the GitHub API did not include information about the most recent commit. Response from GitHub: ${util.inspect(responseData, {depth:null})}`);
+                }
+                lastModifiedAt = (new Date(mostRecentCommitToThisFile.commit.committer.date)).getTime(); // Convert the UTC timestamp from GitHub to a JS timestamp.
+              }
 
               // Determine display title (human-readable title) to use for this page.
               let pageTitle;
@@ -410,10 +586,11 @@ module.exports = {
 
               // If the page has a pageOrderInSection meta tag, we'll use that to sort pages in their bottom level sections.
               let pageOrderInSection;
+              let docNavCategory;
               if(sectionRepoPath === 'docs/') {
                 // Set a flag to determine if the page is a readme (e.g. /docs/Using-Fleet/configuration-files/readme.md) or a FAQ page.
                 // READMEs in subfolders and FAQ pages don't have pageOrderInSection values, they are always sorted at the end of sections.
-                let isPageAReadmeOrFAQ = (_.last(pageUnextensionedLowercasedRelPath.split(/\//)) === 'faq' || _.last(pageUnextensionedLowercasedRelPath.split(/\//)) === 'readme');
+                let isPageAReadmeOrFAQ = (_.last(pageUnextensionedUnwhitespacedLowercasedRelPath.split(/\//)) === 'faq' || _.last(pageUnextensionedUnwhitespacedLowercasedRelPath.split(/\//)) === 'readme');
                 if(embeddedMetadata.pageOrderInSection) {
                   if(isPageAReadmeOrFAQ) {
                   // Throwing an error if a FAQ or README page has a pageOrderInSection meta tag
@@ -428,6 +605,18 @@ module.exports = {
                 } else if(!embeddedMetadata.pageOrderInSection && !isPageAReadmeOrFAQ){
                   // If the page is not a Readme or a FAQ, we'll throw an error if its missing a pageOrderInSection meta tag.
                   throw new Error(`Failed compiling markdown content: A Non FAQ or README Documentation page is missing a pageOrderInSection meta tag (<meta name="pageOrderInSection" value="">) at "${path.join(topLvlRepoPath, pageSourcePath)}".  To resolve, add a meta tag with a number higher than 0.`);
+                }
+                if(embeddedMetadata.navSection){
+                  docNavCategory = embeddedMetadata.navSection;
+                } else {
+                  docNavCategory = 'Uncategorized';
+                }
+              }
+
+              if(sectionRepoPath === 'handbook/') {
+                if(!embeddedMetadata.maintainedBy) {
+                  // Throw an error if a handbook page is missing a maintainedBy meta tag.
+                  throw new Error(`Failed compiling markdown content: A handbook page is missing a maintainedBy meta tag (<meta name="maintainedBy" value="">) at "${path.join(topLvlRepoPath, pageSourcePath)}".  To resolve, add a maintainedBy meta tag with the page maintainer's GitHub username as the value.`);
                 }
               }
 
@@ -478,24 +667,30 @@ module.exports = {
                     if (!isExternal) { // If the image is hosted on fleetdm.com, we'll modify the meta value to reference the file directly in the `website/assets/` folder
                       embeddedMetadata.articleImageUrl = embeddedMetadata.articleImageUrl.replace(/https?:\/\//, '').replace(/^fleetdm\.com/, '');
                     } else { // If the value is a link to an image that will not be hosted on fleetdm.com, we'll throw an error.
-                      throw new Error(`Failed compiling markdown content: An article page has an invalid a articleImageUrl meta tag (<meta name="articleImageUrl" value="${embeddedMetadata.articleImageUrl}">) at "${path.join(topLvlRepoPath, pageSourcePath)}".  To resolve, change the value of the meta tag to be an image that will be hosted on fleetdm.com`);
+                      throw new Error(`Failed compiling markdown content: An article page has an invalid articleImageUrl meta tag (<meta name="articleImageUrl" value="${embeddedMetadata.articleImageUrl}">) at "${path.join(topLvlRepoPath, pageSourcePath)}".  To resolve, change the value of the meta tag to be an image that will be hosted on fleetdm.com`);
                     }
                   } else if(inWebsiteAssetFolder) { // If the `articleImageUrl` value is a relative link to the `website/assets/` folder, we'll modify the value to link directly to that folder.
                     embeddedMetadata.articleImageUrl = embeddedMetadata.articleImageUrl.replace(/^\.\.\/website\/assets/g, '');
                   } else { // If the value is not a url and the relative link does not go to the 'website/assets/' folder, we'll throw an error.
-                    throw new Error(`Failed compiling markdown content: An article page has an invalid a articleImageUrl meta tag (<meta name="articleImageUrl" value="${embeddedMetadata.articleImageUrl}">) at "${path.join(topLvlRepoPath, pageSourcePath)}".  To resolve, change the value of the meta tag to be a URL or repo relative link to an image in the 'website/assets/images' folder`);
+                    throw new Error(`Failed compiling markdown content: An article page has an invalid articleImageUrl meta tag (<meta name="articleImageUrl" value="${embeddedMetadata.articleImageUrl}">) at "${path.join(topLvlRepoPath, pageSourcePath)}".  To resolve, change the value of the meta tag to be a URL or repo relative link to an image in the 'website/assets/images' folder`);
                   }
                 }
                 if(embeddedMetadata.description && embeddedMetadata.description.length > 150) {
                   // Throwing an error if the article's description meta tag value is over 150 characters long
                   throw new Error(`Failed compiling markdown content: An article page has an invalid description meta tag (<meta name="description" value="${embeddedMetadata.description}">) at "${path.join(topLvlRepoPath, pageSourcePath)}".  To resolve, make sure the value of the meta description is less than 150 characters long.`);
                 }
+                if(embeddedMetadata.showOnTestimonialsPageWithEmoji){
+                  // Throw an error if a showOnTestimonialsPageWithEmoji value is not one of: 🥀, 🔌, 🚪, or 🪟.
+                  if(!['🥀', '🔌', '🚪', '🪟'].includes(embeddedMetadata.showOnTestimonialsPageWithEmoji)){
+                    throw new Error(`Failed compiling markdown content: An article page has an invalid showOnTestimonialsPageWithEmoji meta tag (<meta name="showOnTestimonialsPageWithEmoji" value="${embeddedMetadata.articleImageUrl}">) at "${path.join(topLvlRepoPath, pageSourcePath)}".  To resolve, change the value of the meta tag to be one of 🥀, 🔌, 🚪, or 🪟 and try running this script again.`);
+                  }
+                }
                 // For article pages, we'll attach the category to the `rootRelativeUrlPath`.
                 // If the article is categorized as 'product' we'll replace the category with 'use-cases', or if it is categorized as 'success story' we'll replace it with 'device-management'
                 rootRelativeUrlPath = (
                   '/' +
                   (encodeURIComponent(embeddedMetadata.category === 'success stories' ? 'success-stories' : embeddedMetadata.category === 'security' ? 'securing' : embeddedMetadata.category)) + '/' +
-                  (pageUnextensionedLowercasedRelPath.split(/\//).map((fileOrFolderName) => encodeURIComponent(fileOrFolderName.replace(/^[0-9]+[\-]+/,''))).join('/'))
+                  (pageUnextensionedUnwhitespacedLowercasedRelPath.split(/\//).map((fileOrFolderName) => encodeURIComponent(fileOrFolderName.replace(/^[0-9]+[\-]+/,'').replace(/\./g, '-'))).join('/'))
                 );
               }
 
@@ -510,7 +705,7 @@ module.exports = {
               let htmlId = (
                 sectionRepoPath.slice(0,10)+
                 '--'+
-                _.last(pageUnextensionedLowercasedRelPath.split(/\//)).slice(0,20)+
+                _.last(pageUnextensionedUnwhitespacedLowercasedRelPath.split(/\//)).slice(0,20)+
                 '--'+
                 sails.helpers.strings.random.with({len:10})// if two files in different folders happen to have the same filename, there is a 1/16^10 chance of a collision (this is small enough- worst case, the build fails at the uniqueness check and we rerun it.)
               ).replace(/[^a-z0-9\-]/ig,'');
@@ -534,6 +729,7 @@ module.exports = {
                 lastModifiedAt: lastModifiedAt,
                 htmlId: htmlId,
                 pageOrderInSectionPath: pageOrderInSection,
+                docNavCategory: docNavCategory ? docNavCategory : undefined,// FUTURE: No docs specific markdown page attributes.
                 sectionRelativeRepoPath: sectionRelativeRepoPath,
                 meta: _.omit(embeddedMetadata, ['title', 'pageOrderInSection']),
                 linksForHandbookIndex: linksForHandbookIndex.length > 0 ? linksForHandbookIndex : undefined,
@@ -541,16 +737,161 @@ module.exports = {
             }
           }//∞ </each source file>
         }//∞ </each section repo path>
+        // Now build EJS partials from open positions in open-positions.yml. Note: We don't build these
+        builtStaticContent.openPositions = [];// This will be passed into a component on the company handbook page to render a list of open positions.
+        let RELATIVE_PATH_TO_OPEN_POSITIONS_YML_IN_FLEET_REPO = 'handbook/company/open-positions.yml';
 
+        // Get last modified timestamp using git, and represent it as a JS timestamp.
+        let lastModifiedAt;
+        if(!githubAccessToken) {
+          lastModifiedAt = Date.now();
+        } else {
+          // If we're including a lastModifiedAt value for schema tables, we'll send a request to the GitHub API to get a timestamp of when the last commit
+          let responseData = await sails.helpers.http.get.with({// [?]: https://docs.github.com/en/rest/commits/commits?apiVersion=2022-11-28#list-commits
+            url: 'https://api.github.com/repos/fleetdm/fleet/commits',
+            data: {
+              path: RELATIVE_PATH_TO_OPEN_POSITIONS_YML_IN_FLEET_REPO,
+              page: 1,
+              per_page: 1,//eslint-disable-line camelcase
+            },
+            headers: baseHeadersForGithubRequests,
+          }).intercept((err)=>{
+            return new Error(`When getting the commit history for the open positions YAML to get a lastModifiedAt timestamp, an error occured.`, err);
+          });
+          // The value we'll use for the lastModifiedAt timestamp will be date value of the `commiter` property of the `commit` we got in the API response from github.
+          let mostRecentCommitToThisFile = responseData[0];
+          if(!mostRecentCommitToThisFile.commit || !mostRecentCommitToThisFile.commit.committer) {
+            // Throw an error if the the response from GitHub is missing a commit or commiter.
+            throw new Error(`When trying to get a lastModifiedAt timestamp for the open positions YAML, the response from the GitHub API did not include information about the most recent commit. Response from GitHub: ${util.inspect(responseData, {depth:null})}`);
+          }
+          lastModifiedAt = (new Date(mostRecentCommitToThisFile.commit.committer.date)).getTime(); // Convert the UTC timestamp from GitHub to a JS timestamp.
+        }
+
+        let openPositionsYaml = await sails.helpers.fs.read(path.join(topLvlRepoPath, RELATIVE_PATH_TO_OPEN_POSITIONS_YML_IN_FLEET_REPO)).intercept('doesNotExist', (err)=>new Error(`Could not find open positions YAML file at "${RELATIVE_PATH_TO_OPEN_POSITIONS_YML_IN_FLEET_REPO}".  Was it accidentally moved?  Raw error: `+err.message));
+        let openPositionsToCreatePartialsFor = YAML.parse(openPositionsYaml, {prettyErrors: true});
+        // If the open positions yaml file is empty, the YAML parser will return it as null, and we can skip validating this file.
+        if(openPositionsToCreatePartialsFor !== null) {
+          for(let openPosition of openPositionsToCreatePartialsFor){
+            // Make sure all open positions have the required values.
+            if(!openPosition.jobTitle){
+              throw new Error(`Error: could not build open position handbook pages from ${RELATIVE_PATH_TO_OPEN_POSITIONS_YML_IN_FLEET_REPO}. An open position in the YAML is missing a "jobTitle". To resolve, add a "jobTitle" value and try running this script again.`);
+            }
+
+            if(!openPosition.department){
+              throw new Error(`Error: could not build open position handbook pages from ${RELATIVE_PATH_TO_OPEN_POSITIONS_YML_IN_FLEET_REPO}. An open position in the YAML is missing a "department" value. To resolve, add a "department" value to the "${openPosition.jobTitle}" position and try running this script again.`);
+            }
+
+            if(!openPosition.hiringManagerName){
+              throw new Error(`Error: could not build open position handbook pages from ${RELATIVE_PATH_TO_OPEN_POSITIONS_YML_IN_FLEET_REPO}. An open position in the YAML is missing a "hiringManagerName" value. To resolve, add a "hiringManagerName" value to the "${openPosition.jobTitle}" position and try running this script again.`);
+            }
+
+            if(!openPosition.hiringManagerLinkedInUrl){
+              throw new Error(`Error: could not build open position handbook pages from ${RELATIVE_PATH_TO_OPEN_POSITIONS_YML_IN_FLEET_REPO}. An open position in the YAML is missing a "hiringManagerLinkedInUrl" value. To resolve, add a "hiringManagerLinkedInUrl" value to the "${openPosition.jobTitle}" position and try running this script again.`);
+            }
+
+            if(!openPosition.hiringManagerGithubUsername){
+              throw new Error(`Error: could not build open position handbook pages from ${RELATIVE_PATH_TO_OPEN_POSITIONS_YML_IN_FLEET_REPO}. An open position in the YAML is missing a "hiringManagerGithubUsername" value. To resolve, add a "hiringManagerGithubUsername" value to the "${openPosition.jobTitle}" position and try running this script again.`);
+            }
+
+            if(!openPosition.responsibilities){
+              throw new Error(`Error: could not build open position handbook pages from ${RELATIVE_PATH_TO_OPEN_POSITIONS_YML_IN_FLEET_REPO}. An open position in the YAML is missing a "responsibilities" value. To resolve, add a "responsibilities" value to the "${openPosition.jobTitle}" position and try running this script again.`);
+            }
+
+            if(!openPosition.experience){
+              throw new Error(`Error: could not build open position handbook pages from ${RELATIVE_PATH_TO_OPEN_POSITIONS_YML_IN_FLEET_REPO}. An open position in the YAML is missing an "experience" value. To resolve, add an "experience" value to the "${openPosition.jobTitle}" position and try running this script again.`);
+            }
+            if(openPosition.onTargetEarnings){
+              if(typeof openPosition.onTargetEarnings !== 'string') {
+                throw new Error(`Error: could not build open position handbook pages from ${RELATIVE_PATH_TO_OPEN_POSITIONS_YML_IN_FLEET_REPO}. An open position in the YAML has an invalid "onTargetEarnings" value. (expected a strong, but instead got a ${typeof openPosition.onTargetEarnings}) To resolve, change the "onTargetEarnings" value of the "${openPosition.jobTitle}" position to be a string that contains the on target earnings for this position and try running this script again.`);
+              }
+            }
+            let pageTitle = openPosition.jobTitle;
+
+            let mdStringForThisOpenPosition = `# ${openPosition.jobTitle}\n\n## Let's start with why we exist. 📡\n\nEver wondered if your employer is monitoring your work computer?\n\nOrganizations make huge investments every year to keep their laptops and servers online, secure, compliant, and usable from anywhere. This is called "device management".\n\nAt Fleet, we think it's time device management became [transparent](https://fleetdm.com/transparency) and [open source](https://fleetdm.com/handbook/company#open-source).\n\n\n## About the company 🌈\n\nYou can read more about the company in our [handbook](https://fleetdm.com/handbook/company), which is public and open to the world.\n\ntldr; Fleet Device Management Inc. is a [recently-funded](https://techcrunch.com/2022/04/28/fleet-nabs-20m-to-enable-enterprises-to-manage-their-devices/) Series A startup founded and backed by the same people who created osquery, the leading open source security agent. Today, osquery is installed on millions of laptops and servers, and it is especially popular with [enterprise IT and security teams](https://www.linuxfoundation.org/press/press-release/the-linux-foundation-announces-intent-to-form-new-foundation-to-support-osquery-community).\n\n\n## Your primary responsibilities 🔭\n${openPosition.responsibilities}\n\n## Are you our new team member? 🧑‍🚀\nIf most of these qualities sound like you, we would love to chat and see if we're a good fit.\n\n${openPosition.experience}\n\n## Why should you join us? 🛸\n\nLearn more about the company and [why you should join us here](https://fleetdm.com/handbook/company#is-it-any-good).\n\n<div purpose="open-position-quote-card"><div><img alt="Deloitte logo" src="/images/logo-deloitte-166x36@2x.png"></div><div purpose="open-position-quote"><div purpose="quote-text"><p>“One of the best teams out there to go work for and help shape security platforms.”</p></div><div purpose="quote-attribution"><strong>Dhruv Majumdar</strong><p>Director Of Cyber Risk & Advisory</p></div></div></div>\n\n\n## Want to join the team?\n\nWant to join the team?\n\nMessage us on [LinkedIn](https://www.linkedin.com/company/fleetdm/). \n\n\n >The salary range for this role is ${openPosition.onTargetEarnings ? openPosition.onTargetEarnings : '$48,000 - $480,000'}. Fleet provides competitive compensation based on our [compensation philosophy](https://fleetdm.com/handbook/company/communications#compensation), as well as comprehensive [benefits](https://fleetdm.com/handbook/company/communications#benefits).`;
+
+
+            let htmlStringForThisPosition = await sails.helpers.strings.toHtml.with({mdString: mdStringForThisOpenPosition});
+
+            // Modify links in the generated html string.
+            htmlStringForThisPosition = htmlStringForThisPosition.replace(/(href="https?:\/\/([^"]+)")/g, (hrefString)=>{// « Modify links that are potentially external
+              // Check if this is an external link (like https://google.com) but that is ALSO not a link
+              // to some page on the destination site where this will be hosted, like `(*.)?fleetdm.com`.
+              // If external, add target="_blank" so the link will open in a new tab.
+              // Note: links to blog.fleetdm.com will be treated as an external link.
+              let isExternal = ! hrefString.match(/^href=\"https?:\/\/([^\.|blog]+\.)*fleetdm\.com/g);// « FUTURE: make this smarter with sails.config.baseUrl + _.escapeRegExp()
+              // Check if this link is to fleetdm.com or www.fleetdm.com.
+              let isBaseUrl = hrefString.match(/^(href="https?:\/\/)([^\.]+\.)*fleetdm\.com"$/g);
+              if (isExternal) {
+
+                return hrefString.replace(/(href="https?:\/\/([^"]+)")/g, '$1 target="_blank"');
+              } else {
+                // Otherwise, change the link to be web root relative.
+                // (e.g. 'href="http://sailsjs.com/documentation/concepts"'' becomes simply 'href="/documentation/concepts"'')
+                // > Note: See the Git version history of "compile-markdown-content.js" in the sailsjs.com website repo for examples of ways this can work across versioned subdomains.
+                if (isBaseUrl) {
+                  return hrefString.replace(/href="https?:\/\//, '').replace(/([^\.]+\.)*fleetdm\.com/, 'href="/');
+                } else {
+                  return hrefString.replace(/href="https?:\/\//, '').replace(/^([^\.]+\.)*fleetdm\.com/, 'href="');
+                }
+              }
+            });//∞
+
+            // Determine the htmlId for the generated page.
+            let htmlId = (
+              'handbook'+
+              '--'+
+              _.kebabCase(openPosition.jobTitle)+
+              '--'+
+              sails.helpers.strings.random.with({len:10})// if two files in different folders happen to have the same filename, there is a 1/16^10 chance of a collision (this is small enough- worst case, the build fails at the uniqueness check and we rerun it.)
+            ).replace(/[^a-z0-9\-]/ig,'');
+
+            // Determine the rootRelativeUrlPath for this open position, this will be used as the page's URL and to check if a markdown page already exists with this page's URL
+            let rootRelativeUrlPath = '/handbook/company/open-positions/'+encodeURIComponent(_.kebabCase(openPosition.jobTitle));
+
+            // If there is an existing page with the generated url, throw an error.
+            if (rootRelativeUrlPathsSeen.includes(rootRelativeUrlPath)) {
+              throw new Error(`Failed compiling markdown content: The "jobTitle" of an open position in ${RELATIVE_PATH_TO_OPEN_POSITIONS_YML_IN_FLEET_REPO} matches an existing page in the company handbook folder, and named would result in colliding (duplicate) URLs for the website.  To resolve, rename the pages whose names are too similar.  Duplicate detected: ${rootRelativeUrlPath}`);
+            }//•
+
+            // Generate ejs partial
+            let htmlOutputPath = path.resolve(sails.config.appPath, path.join(APP_PATH_TO_COMPILED_PAGE_PARTIALS, htmlId+'.ejs'));
+            if (dry) {
+              sails.log('Dry run: Would have generated file:', htmlOutputPath);
+            } else {
+              await sails.helpers.fs.write(htmlOutputPath, htmlStringForThisPosition);
+            }
+
+            builtStaticContent.markdownPages.push({
+              url: rootRelativeUrlPath,
+              title: pageTitle,
+              lastModifiedAt: lastModifiedAt,
+              htmlId: htmlId,
+              sectionRelativeRepoPath: 'company/open-positions.yml', // This is used to create the url for the "Edit this page" link
+              meta: {maintainedBy: openPosition.hiringManagerGithubUsername},// Set the page maintainer to be the position's hiring manager.
+            });
+            // Add the positon to builtStaticContent.openPositions
+            builtStaticContent.openPositions.push({
+              jobTitle: openPosition.jobTitle,
+              url: rootRelativeUrlPath,
+            });
+          }
+
+        }
         // After we build the Markdown pages, we'll merge the osquery schema with the Fleet schema overrides, then create EJS partials for each table in the merged schema.
-
-        let expandedTables = await sails.helpers.getExtendedOsquerySchema();
-
+        let expandedTables;
+        if(githubAccessToken){
+          expandedTables = await sails.helpers.getExtendedOsquerySchema.with({includeLastModifiedAtValue: true, githubAccessToken,});
+        } else {
+          expandedTables = await sails.helpers.getExtendedOsquerySchema();
+        }
+        // Add the expanded tables to the website's configuration as builtStaticContent.osqueryTables.
+        builtStaticContent.schemaTables = expandedTables;
         // Once we have our merged schema, we'll create ejs partials for each table.
         for(let table of expandedTables) {
           let keywordsForSyntaxHighlighting = [];
           keywordsForSyntaxHighlighting.push(table.name);
           if(!table.hidden) { // If a table has `"hidden": true` the table won't be shown in the final schema, and we'll ignore it
+
             // Start building the markdown string for this table.
             let tableMdString = '\n## '+table.name;
             if(table.evented){
@@ -561,38 +902,43 @@ module.exports = {
             tableMdString += '\n\n'+table.description+'\n\n|Column | Type | Description |\n|-|-|-|\n';
 
             // Iterate through the columns of the table, we'll add a row to the markdown table element for each column in this schema table
-            for(let column of table.columns) {
-              if(!column.hidden) { // If te column is hidden, we won't add it to the final table.
-                let columnDescriptionForTable = '';// Set the initial value of the description that will be added to the table for this column.
-                if(column.description) {
-                  columnDescriptionForTable = column.description;
-                }
-                // Replacing pipe characters and newlines with html entities in column descriptions to keep it from breaking markdown tables.
-                columnDescriptionForTable = columnDescriptionForTable.replace(/\|/g, '&#124;').replace(/\n/gm, '&#10;');
-
-                keywordsForSyntaxHighlighting.push(column.name);
-                if(column.required) { // If a column has `"required": true`, we'll add a note to the description that will be added to the table
-                  columnDescriptionForTable += '<br> **Required in `WHERE` clause** ';
-                }
-                if(column.requires_user_context) { // If a column has `"requires_user_context": true`, we'll add a note to the description that will be added to the table
-                  columnDescriptionForTable += '<br> **Defaults to root** &nbsp;&nbsp;[Learn more](https://fleetdm.com/guides/osquery-consider-joining-against-the-users-table?utm_source=fleetdm.com&utm_content=table-'+encodeURIComponent(table.name)+')';
-                }
-                if(column.platforms) { // If a column has an array of platforms, we'll add a note to the final column description
-
-                  let platformString = '<br> **Only available on ';// start building a string to add to the column's description
-
-                  if(column.platforms.length === 2) { // Because there are only three options for platform, we can safely assume that there will be at most 2 platforms, so we'll just handle this one of two ways
-                    // If there are two values in the platforms array, we'll add the capitalized version of each to the columns description
-                    platformString += column.platforms[0]+' and '+ column.platforms[1];
-                  } else {
-                    // Otherwise, there is only one value in the platform array and we'll add that value to the column's description
-                    platformString += column.platforms[0];
-                  }
-                  platformString += ' devices.** ';
-                  columnDescriptionForTable += platformString; // Add the platform string to the column's description.
-                }
-                tableMdString += ' | '+column.name+' | '+ column.type +' | '+columnDescriptionForTable+'|\n';
+            for(let column of _.sortBy(table.columns, 'name')) {
+              let columnDescriptionForTable = '';// Set the initial value of the description that will be added to the table for this column.
+              if(column.description) {
+                columnDescriptionForTable = column.description;
               }
+              // Replacing pipe characters and newlines with html entities in column descriptions to keep it from breaking markdown tables.
+              columnDescriptionForTable = columnDescriptionForTable.replace(/\|/g, '&#124;').replace(/\n/gm, '&#10;');
+
+              keywordsForSyntaxHighlighting.push(column.name);
+              if(column.required) { // If a column has `"required": true`, we'll add a note to the description that will be added to the table
+                columnDescriptionForTable += '<br> **Required in `WHERE` clause** ';
+              }
+              if(column.hidden) { // If a column has `"hidden": true`, we'll add a note to the description that will be added to the table
+                columnDescriptionForTable += '<br> **Not returned in `SELECT * FROM '+table.name+'`.**';
+              }
+              if(column.platforms) { // If a column has an array of platforms, we'll add a note to the final column description
+
+                let platformString = '<br> **Only available on ';// start building a string to add to the column's description
+
+                if(column.platforms.length > 3) {// FUTURE: add support for more than three platform values in columns.
+                  throw new Error('Support for more than three platforms in columns has not been implemented yet. If this column is supported on all platforms, you can omit the platforms array entirely.');
+                }
+
+                if(column.platforms.length === 3) { // Because there are only four options for platform, we can safely assume that there will be at most 3 platforms, so we'll just handle this one of three ways
+                  // If there are three, we'll add a string with an oxford comma. e.g., "On macOS, Windows, and Linux"
+                  platformString += `${column.platforms[0]}, ${column.platforms[1]}, and ${column.platforms[2]}`;
+                } else if(column.platforms.length === 2) {
+                  // If there are two values in the platforms array, it will be formated as "[Platform 1] and [Platform 2]"
+                  platformString += `${column.platforms[0]} and ${column.platforms[1]}`;
+                } else {
+                  // Otherwise, there is only one value in the platform array and we'll add that value to the column's description
+                  platformString += column.platforms[0];
+                }
+                platformString += '** ';
+                columnDescriptionForTable += platformString; // Add the platform string to the column's description.
+              }
+              tableMdString += ' | '+column.name+' | '+ column.type +' | '+columnDescriptionForTable+'|\n';
             }
             if(table.examples) { // If this table has a examples value (These will be in the Fleet schema JSON) We'll add the examples to the markdown string.
               tableMdString += '\n### Example\n\n'+table.examples+'\n';
@@ -642,12 +988,14 @@ module.exports = {
             } else {
               await sails.helpers.fs.write(htmlOutputPath, htmlString);
             }
+
             // Add this table to the array of schemaTables in builtStaticContent.
             builtStaticContent.markdownPages.push({
               url: '/tables/'+encodeURIComponent(table.name),
               title: table.name,
               htmlId: htmlId,
               evented: table.evented,
+              lastModifiedAt: table.lastModifiedAt,
               platforms: table.platforms,
               keywordsForSyntaxHighlighting: keywordsForSyntaxHighlighting,
               sectionRelativeRepoPath: table.name, // Setting the sectionRelativeRepoPath to an arbitrary string to work with existing pages.
@@ -662,42 +1010,358 @@ module.exports = {
       },
       async()=>{
         // Validate the pricing table yaml and add it to builtStaticContent.pricingTable.
-        let RELATIVE_PATH_TO_PRICING_TABLE_YML_IN_FLEET_REPO = 'handbook/product/pricing-features-table.yml';// TODO: Is there a better home for this file?
+        let RELATIVE_PATH_TO_PRICING_TABLE_YML_IN_FLEET_REPO = 'handbook/company/pricing-features-table.yml';
         let yaml = await sails.helpers.fs.read(path.join(topLvlRepoPath, RELATIVE_PATH_TO_PRICING_TABLE_YML_IN_FLEET_REPO)).intercept('doesNotExist', (err)=>new Error(`Could not find pricing table features YAML file at "${RELATIVE_PATH_TO_PRICING_TABLE_YML_IN_FLEET_REPO}".  Was it accidentally moved?  Raw error: `+err.message));
-        let pricingTableCategories = YAML.parse(yaml, {prettyErrors: true});
-
-        for(let category of pricingTableCategories){
-          if(!category.categoryName){ // Throw an error if a category is missing a categoryName.
-            throw new Error('Could not build pricing table config from pricing-features-table.yml, a category in the pricing table configuration is missing a categoryName. To resolve, make sure every category in the pricing table YAML file has a categoryName');
-          }
-          if(!category.features){// Throw an error if a category is missing `features`.
-            throw new Error('Could not build pricing table config from pricing-features-table.yml, the "'+category.categoryName+'" category in the yaml file is missing features. To resolve, add an array of features to this category.');
-          }
-          if(!_.isArray(category.features)){ // Throw an error if a category's `features`` is not an array.
-            throw new Error('Could not build pricing table config from pricing-features-table.yml, The value of the "'+category.categoryName+'" category is invalid, to resolve, change the features for this category to be an array of objects.');
-          }
-          // Validate all features in a category.
-          for(let feature of category.features){
-            if(!feature.name) { // Throw an error if a feature is missing a `name`.
-              throw new Error('Could not build pricing table config from pricing-features-table.yml. A feature in the "'+category.categoryName+'" category is missing a "name". To resolve, add a "name" to this feature '+feature);
+        let pricingTableFeatures = YAML.parse(yaml, {prettyErrors: true});
+        let VALID_PRODUCT_CATEGORIES = ['Endpoint operations', 'Device management', 'Vulnerability management'];
+        let VALID_PRICING_TABLE_CATEGORIES = ['Support', 'Deployment', 'Integrations', 'Configuration', 'Devices', 'Vulnerability management'];
+        let VALID_PRICING_TABLE_KEYS = ['industryName', 'description', 'documentationUrl', 'tier', 'jamfProHasFeature', 'jamfProtectHasFeature', 'usualDepartment', 'productCategories', 'pricingTableCategories', 'waysToUse', 'buzzwords', 'demos', 'dri', 'friendlyName', 'moreInfoUrl', 'comingSoonOn', 'screenshotSrc', 'isExperimental'];
+        for(let feature of pricingTableFeatures){
+          // Throw an error if a feature contains an unrecognized key.
+          for(let key of _.keys(feature)){
+            if(!VALID_PRICING_TABLE_KEYS.includes(key)){
+              throw new Error(`Unrecognized key. Could not build pricing table config from pricing-features-table.yml. The "${feature.industryName}" feature contains an unrecognized key (${key}). To resolve, fix any typos or remove this key and try running this script again.`);
             }
-            if(!feature.tier) { // Throw an error if a feature is missing a `tier`.
-              throw new Error('Could not build pricing table config from pricing-features-table.yml. The "'+feature.name+'" feature is missing a "tier". To resolve, add a "tier" (either "Free" or "Premium") to this feature.');
-            } else if(!_.contains(['Free', 'Premium', 'Ultimate'], feature.tier)){ // Throw an error if a feature's `tier` is not "Free", "Premium", or "Ultimate".
-              throw new Error('Could not build pricing table config from pricing-features-table.yml. The "'+feature.name+'" feature has an invalid "tier". to resolve, change the value of this features "tier" (currently set to '+feature.tier+') to be either "Free" or "Premium".');
+          }
+          if(feature.name) {// Compatibility check
+            throw new Error(`Could not build pricing table config from pricing-features-table.yml. A feature has a "name" (${feature.name}) which is no longer supported. To resolve, add a "industryName" to this feature: ${feature}`);
+          }
+          if(feature.industryName !== undefined) {
+            if(!feature.industryName || typeof feature.industryName !== 'string') {
+              throw new Error(`Could not build pricing table config from pricing-features-table.yml. A feature has a missing or invalid "industryName". To resolve, set an "industryName" as a valid, non-empty string for this feature ${feature}`);
             }
-            if(feature.comingSoon === undefined) { // Throw an error if a feature is missing a `comingSoon` value
-              throw new Error('Could not build pricing table config from pricing-features-table.yml. The "'+feature.name+'" feature is missing a "comingSoon" value (boolean). To resolve, add a comingSoon value to this feature.');
-            } else if(typeof feature.comingSoon !== 'boolean'){ // Throw an error if the `comingSoon` value is not a boolean.
-              throw new Error('Could not build pricing table config from pricing-features-table.yml. The "'+feature.name+'" feature has an invalid "comingSoon" value (currently set to '+feature.comingSoon+'). To resolve, change the value of "comingSoon" for this feature to be either "true" or "false".');
+            feature.name = feature.industryName;//« This is just an alias. FUTURE: update code elsewhere to use the new property instead, and delete this aliasing.
+          }
+          if(!feature.productCategories){
+            throw new Error(`Could not build pricing table config from pricing-features-table.yml. The '${feature.industryName}' feature is missing a 'productCategories' value. Please add an array of product categories to this feature and try running this script again`);
+          } else {
+            if(!_.isArray(feature.productCategories)){
+              throw new Error(`Could not build pricing table config from pricing-features-table.yml. The '${feature.industryName}' feature has an invalid 'productCategories' value. Please change the productCategories for this feature to be an array of product categories`);
+            } else {
+              for(let category of feature.productCategories){
+                if(!_.contains(VALID_PRODUCT_CATEGORIES, category)){
+                  throw new Error(`Could not build pricing table config from pricing-features-table.yml. The '${feature.industryName}' feature has a 'productCategories' with an an invalid product category (${category}). Please change the values in this array to be one of: ${VALID_PRODUCT_CATEGORIES.join(', ')}`);
+                }
+              }
             }
+          }
+          if(!feature.pricingTableCategories){
+            throw new Error(`Could not build pricing table config from pricing-features-table.yml. The ${feature.industryName} feature is missing a 'pricingTableCategory' value. Please add this value to this feature to be the category in the pricing table`);
+          } else if(!_.isArray(feature.pricingTableCategories)){
+            throw new Error(`Could not build pricing table config from pricing-features-table.yml. The ${feature.industryName} feature has an invalid 'pricingTableCategory' value. Please change the productCategories for this feature to be an array of pricing table categories. Type of invalid pricingTableCategory value: ${typeof feature.pricingTableCategory}`);
+          } else {
+            for(let category of feature.pricingTableCategories){
+              if(!VALID_PRICING_TABLE_CATEGORIES.includes(category)){
+                throw new Error(`Could not build pricing table config from pricing-features-table.yml. The ${feature.industryName} feature has an invalid 'pricingTableCategory' value. Please set this value to be one of: "${VALID_PRICING_TABLE_CATEGORIES.join('", "')}" and try running this script again. Invalid pricing table value: ${category}`);
+              }
+            }
+          }
+          if(!feature.tier) { // Throw an error if a feature is missing a `tier`.
+            throw new Error(`Could not build pricing table config from pricing-features-table.yml. The ${feature.industryName} feature is missing a "tier". To resolve, add a "tier" (either "Free" or "Premium") to this feature.`);
+          } else if(!_.contains(['Free', 'Premium'], feature.tier)){ // Throw an error if a feature's `tier` is not "Free" or "Premium".
+            throw new Error(`Could not build pricing table config from pricing-features-table.yml. The ${feature.industryName} feature has an invalid "tier". to resolve, change the value of this features "tier" (currently set to '+feature.tier+') to be either "Free" or "Premium".`);
+          }
+          if(feature.comingSoon) {// Compatibility check
+            throw new Error(`Could not build pricing table config from pricing-features-table.yml. A feature (industryName: ${feature.industryName}) category has "comingSoon", which is no longer supported. To resolve, remove "comingSoon" or add "comingSoonOn" (YYYY-MM-DD) to this feature ${feature}`);
+          }
+          if(feature.comingSoonOn !== undefined) {
+            if(typeof feature.comingSoonOn !== 'string'){
+              throw new Error(`Could not build pricing table config from pricing-features-table.yml. The ${feature.industryName} feature has an invalid "comingSoonOn" value (currently set to ${feature.comingSoonOn}, but expecting a string like 'YYYY-MM-DD'.)`);
+            }
+            feature.comingSoon = true;//« This is just an alias. FUTURE: update code elsewhere to use the new property instead, and delete this aliasing.
+          }//ﬁ
+        }
+        builtStaticContent.pricingTable = pricingTableFeatures;
+      },
+      async()=>{
+        // Validate the pricing table yaml and add it to builtStaticContent.pricingTable.
+        let RELATIVE_PATH_TO_TESTIMONIALS_YML_IN_FLEET_REPO = 'handbook/company/testimonials.yml';
+        let VALID_PRODUCT_CATEGORIES = ['Observability', 'Device management', 'Software management'];
+        let yaml = await sails.helpers.fs.read(path.join(topLvlRepoPath, RELATIVE_PATH_TO_TESTIMONIALS_YML_IN_FLEET_REPO)).intercept('doesNotExist', (err)=>new Error(`Could not find testimonials YAML file at "${RELATIVE_PATH_TO_TESTIMONIALS_YML_IN_FLEET_REPO}".  Was it accidentally moved?  Raw error: `+err.message));
+        let testimonials = YAML.parse(yaml, {prettyErrors: true});
+        for(let testimonial of testimonials){
+          // Throw an error if any value in the testimonial yaml is not a string.
+          for(let key of _.keys(testimonial)) {
+            if(typeof testimonial[key] !== 'string' && key !== 'productCategories'){
+              throw new Error(`Could not build testimonial config from testimonials.yml. A testimonial contains a ${key} with a non-string value. Please make sure all values in testimonials.yml are strings, and try running this script again. Invalid (${typeof testimonial[key]}) ${key} value: ${testimonial[key]}`);
+            }
+          }
+          // Check for required values.
+          if(!testimonial.quote) {
+            throw new Error(`Could not build testimonial config from testimonials.yml. A testimonial is missing a "quote". To resolve, make sure all testimonials have a "quote" and try running this script again. Testimonial missing a quote: ${testimonial}`);
+          }
+          if(!testimonial.quoteAuthorName) {
+            throw new Error(`Could not build testimonial config from testimonials.yml. A testimonial is missing a "quoteAuthorName". To resolve, make sure all testimonials have a "quoteAuthorName", and try running this script again. Testimonial with missing "quoteAuthorName": ${testimonial} `);
+          }
+          if(!testimonial.quoteLinkUrl){
+            throw new Error(`Could not build testimonial config from testimonials.yml. A testimonial is missing a "quoteLinkUrl" (A link to the quote author's LinkedIn profile). To resolve, make sure all testimonials have a "quoteLinkUrl", and try running this script again. Testimonial with missing "quoteLinkUrl": ${testimonial} `);
+          }
+          if(!testimonial.quoteAuthorProfileImageFilename){
+            throw new Error(`Could not build testimonial config from testimonials.yml. A testimonial is missing a "quoteAuthorProfileImageFilename" (The quote author's LinkedIn profile picture). To resolve, make sure all testimonials have a "quoteAuthorProfileImageFilename", and try running this script again. Testimonial with missing "quoteAuthorProfileImageFilename": ${testimonial} `);
+          } else {
+            let imageFileExists = await sails.helpers.fs.exists(path.join(topLvlRepoPath, 'website/assets/images/', testimonial.quoteAuthorProfileImageFilename));
+            if(!imageFileExists){
+              throw new Error(`Could not build testimonials config from testimonials.yml. A testimonial has a 'quoteAuthorProfileImageFilename' value that points to an image that doesn't exist. Please make sure the file exists in the /website/assets/images/ folder. Invalid quoteImageFilename value: ${testimonial.quoteImageFilename}`);
+            }
+          }
+          if(!testimonial.productCategories) {
+            throw new Error(`Could not build testimonial config from testimonials.yml. A testimonial is missing a 'productCategories' value. Please add an array of product categories to this testimonial and try running this script again`);
+          } else {
+            if(!_.isArray(testimonial.productCategories)){
+              throw new Error(`Could not build testimonial config from testimonials.yml. A testimonial has a has an invalid 'productCategories' value. Please change the productCategories for this testimonial to be an array of product categories`);
+            } else {
+              for(let category of testimonial.productCategories){
+                if(!_.contains(VALID_PRODUCT_CATEGORIES, category)){
+                  throw new Error(`Could not build testimonial config from testimonials.yml. A testimonial has a 'productCategories' with an an invalid product category (${category}). Please change the values in this array to be one of: ${VALID_PRODUCT_CATEGORIES.join(', ')}`);
+                }
+              }
+            }
+          }
+          // If the testimonial has a youtubeVideoUrl, we'll validate the link and add the video ID so we can embed the video in a modal.
+          if(testimonial.youtubeVideoUrl) {
+            let videoLinkToCheck;
+            try {
+              videoLinkToCheck = new URL(testimonial.youtubeVideoUrl);
+            } catch(err) {
+              throw new Error(`Could not build testimonial config from testimonials.yml. When trying to parse a "youtubeVideoUrl" value, an erro occured. Please make sure all "youtubeVideoUrl" values are valid URLs and standard Youtube links (e.g, https://www.youtube.com/watch?v=siXy9aanOu4), and try running this script again. Invalid "youtubeVideoUrl" value: ${testimonial.youtubeVideoUrl}. error: ${err}`);
+            }
+            // If this is a youtu.be link, the video ID will be the pathname of the URL.
+            if(!videoLinkToCheck.host.match(/w*\.*youtube\.com$/)) {
+              throw new Error(`Could not build testimonials config from testimonials.yml. A testimonial has a "youtubeVideoUrl" that is a valid youtube link, but does not link to a video. Please make sure all "youtubeVideoLink" values are standard youtube links (e.g, https://www.youtube.com/watch?v=siXy9aanOu4) and try running this script again. invalid "youtubeVideoUrl" value: ${testimonial.youtubeVideoUrl}`);
+            }
+            // If this is a youtube.com link, the video ID will be in a query string.
+            if(!videoLinkToCheck.search){
+              // Throw an error if there is no video
+              throw new Error(`Could not build testimonials config from testimonials.yml. A testimonial has a "youtubeVideoUrl" that is a valid youtube link, but does not link to a video. Please make sure all "youtubeVideoLink" values are standard youtube links (e.g, https://www.youtube.com/watch?v=siXy9aanOu4) and try running this script again. Invalid "youtubeVideoUrl" value: ${testimonial.youtubeVideoUrl}`);
+            }
+            let linkSearchParams = new URLSearchParams(videoLinkToCheck.search);
+            if(!linkSearchParams.has('v')){
+              throw new Error(`Could not build testimonials config from testimonials.yml. A testimonial has a "youtubeVideoUrl" that is a valid youtube link, but does not link to a video. Please make sure all "youtubeVideoLink" values are standard youtube links (e.g, https://www.youtube.com/watch?v=siXy9aanOu4) and try running this script again. Invalid "youtubeVideoUrl" value: ${testimonial.youtubeVideoUrl}`);
+            }
+            testimonial.videoIdForEmbed = linkSearchParams.get('v');
+          }
+          // Validate that all linked images exist, and that they match the website image name conventsions.
+          // We'll also get the images dimensions from the filename, and add an imageHeight value to the testimonial.
+          if(testimonial.quoteImageFilename) {
+            // Throw an error if a testimonial with an image does not have a "quoteLinkUrl"
+            if(!testimonial.quoteLinkUrl){
+              throw new Error(`Could not build testimonial config from testimonials.yml. A testimonial with a 'quoteImageFilename' value is missing a 'quoteLinkUrl'. If providing a 'quoteImageFilename', a quoteLinkUrl (The link that the image will go to) is required. Testimonial missing a quoteLinkUrl: ${testimonial}`);
+            }
+            // Check if the image used for the testimonials exists.
+            let imageFileExists = await sails.helpers.fs.exists(path.join(topLvlRepoPath, 'website/assets/images/', testimonial.quoteImageFilename));
+            if(!imageFileExists){
+              throw new Error(`Could not build testimonials config from testimonials.yml. A testimonial has a 'quoteImageFilename' value that points to an image that doesn't exist. Please make sure the file exists in the /website/assets/images/ folder. Invalid quoteImageFilename value: ${testimonial.quoteImageFilename}`);
+            }
+            let imageFilenameMatchesWebsiteConventions = testimonial.quoteImageFilename.match(/\d+x\d+@2x\.png|jpg|jpeg$/g);
+            if(!imageFilenameMatchesWebsiteConventions) {
+              throw new Error(`Could not build testimonials config from testimonials.yml. A testimonial has a quoteImageFilename that does not match the website\'s naming conventions. To resolve, make sure that the images dimensions are added to the filename, and that the filename ends with @2x. Filename that does not match the Fleet website's naming conventions: ${testimonial.quoteImageFilename}`);
+            }
+            // Strip the 2x from the filename, using image dimensions we matched when we checked if the filename matches website conventions.
+            let extensionlessFilenameWithPostfixRemoved = imageFilenameMatchesWebsiteConventions[0].split('@2x')[0];
+            // Get the height from the filename.
+            let imagePathStringSections = extensionlessFilenameWithPostfixRemoved.split('x');
+            let imageHeight = imagePathStringSections[imagePathStringSections.length - 1];
+            testimonial.imageHeight = Number(imageHeight);
           }
         }
-        builtStaticContent.pricingTable = pricingTableCategories;
+        builtStaticContent.testimonials = testimonials;
       },
+      async()=>{
+        let rituals = {};
+        // Find all the files in the top level /handbook folder and it's sub-folders
+        let FILES_IN_HANDBOOK_FOLDER = await sails.helpers.fs.ls.with({
+          dir: path.join(topLvlRepoPath, '/handbook'),
+          depth: 3
+        });
+        // Filter the list of filenames to get the rituals YAML files.
+        let ritualTablesYamlFiles = FILES_IN_HANDBOOK_FOLDER.filter((filePath)=>{
+          return _.endsWith(filePath, 'rituals.yml');
+        });
 
+        let githubLabelsToCheck = {};
+        let KNOWN_AUTOMATABLE_FREQUENCIES = ['Daily', 'Weekly', 'Triweekly', 'Monthly', 'Annually'];
+        // Process each rituals YAML file. These will be added to the builtStaticContent as JSON
+        for(let ritualsYamlFilePath of ritualTablesYamlFiles){
+          // Get this rituals.yml file's parent folder name, we'll use this as the key for this section's rituals in the ritualsTables dictionary
+          let relativeRepoPathForThisRitualsFile = path.relative(topLvlRepoPath, ritualsYamlFilePath);
+          // Parse the rituals YAML file.
+          let yaml = await sails.helpers.fs.read(ritualsYamlFilePath);
+          let ritualsFromRitualTableYaml = YAML.parse(yaml, {prettyErrors: true});
+
+          // Make sure each ritual in the rituals YAML file has a task, startedOn, frequency, description, and DRI.
+          for(let ritual of ritualsFromRitualTableYaml){
+            if(!ritual.task){ // Throw an error if a ritual is missing a task
+              throw new Error(`Could not build rituals from ${ritualsYamlFilePath}. A ritual in the YAML file is missing a task. To resolve add a task value (the name of the ritual) and try running this script again`);
+            }
+            if(!ritual.startedOn){// Throw an error if a ritual is missing a startedOn value.
+              throw new Error(`Could not build rituals from ${ritualsYamlFilePath}. A ritual in the YAML file is missing a startedOn. To resolve add a startedOn value to the "${ritual.task}" ritual and try running this script again`);
+            }
+            if(!ritual.frequency){// Throw an error if a ritual is missing a frequency value.
+              throw new Error(`Could not build rituals from ${ritualsYamlFilePath}. A ritual in the YAML file is missing a frequency. To resolve add a frequency value to the "${ritual.task}" ritual and try running this script again`);
+            }
+            if(!ritual.description){// Throw an error if a ritual is missing a description value.
+              throw new Error(`Could not build rituals from ${ritualsYamlFilePath}. A ritual in the YAML file is missing a description. To resolve add a description value to the "${ritual.task}" ritual and try running this script again`);
+            }
+            if(!ritual.dri){// Throw an error if a ritual is missing a dri value.
+              throw new Error(`Could not build rituals from ${ritualsYamlFilePath}. A ritual in the YAML file is missing a DRI. To resolve add a DRI value to the "${ritual.task}" ritual and try running this script again`);
+            }
+            if (ritual.autoIssue) { // If this ritual has an autoIssue value, we'll check to make sure the frequency is supported, and that the autoIssue value has a label value (an array of strings).
+              if (!KNOWN_AUTOMATABLE_FREQUENCIES.includes(ritual.frequency)) {
+                throw new Error(`Could not build rituals from ${ritualsYamlFilePath}. Invalid ritual: "${ritual.task}" indicates frequency "${ritual.frequency}", but that isn't supported with automations turned on.  Supported frequencies: ${KNOWN_AUTOMATABLE_FREQUENCIES}`);
+              }
+              if(githubAccessToken){ // If the ritual has an autoIssue value, we'll validate that the DRI value is a GitHub username.
+                await sails.helpers.http.get.with({
+                  url: 'https://api.github.com/users/' + encodeURIComponent(ritual.dri),
+                  headers: baseHeadersForGithubRequests
+                }).intercept((err)=>{
+                  if(err.raw.statusCode === 404) {// If the GitHub API responds with a 404, we'll throw an error with a message about the invalid GitHub username.
+                    return new Error(`Could not build rituals from ${ritualsYamlFilePath}. The DRI value of a ritual (${ritual.task}) contains an invalid GitHub username (${ritual.dri}). To resolve, make sure the DRI value for this ritual is a valid GitHub username.`);
+                  } else {// If the error was not a 404, we'll display the full error
+                    return err;
+                  }
+                });
+              }
+              if(!ritual.autoIssue.labels || !_.isArray(ritual.autoIssue.labels)){ // If the autoIssue value exists, but does not contain an array of labels, throw an error
+                throw new Error(`Could not build rituals from ${ritualsYamlFilePath}. "${ritual.task}" contains an invalid autoIssue value. To resolve, add a "labels" value (An array of strings) to the autoIssue value.`);
+              }
+              if(!ritual.autoIssue.repo || typeof ritual.autoIssue.repo !== 'string') {
+                throw new Error(`Could not build rituals from ${ritualsYamlFilePath}. "${ritual.task}" has an 'autoIssue' value that is missing a 'repo'. Please add the name of the repo that issues will be created in to the "autoIssue.repo" value and try running this script again.`);
+              }
+              if(!_.contains(['fleet', 'confidential'], ritual.autoIssue.repo)) {
+                throw new Error(`Could not built rituals from ${ritualsYamlFilePath}. The "autoIssue.repo" value of "${ritual.task}" contains an invalid GitHub repo (${ritual.autoIssue.repo}). Please change this value to be either "fleet" or "confidential" and try running this script again.`);
+              }
+              // Check each label in the labels array
+              for(let label of ritual.autoIssue.labels) {
+                if(typeof label !== 'string') {
+                  throw new Error(`Could not build rituals from ${ritualsYamlFilePath}. A ritual (${ritual.task}) in the YAML file contains an invalid value in the labels array of the autoIssue value. To resolve, ensure every value in the nested labels array of the autoIssue value is a string.`);
+                }
+                if(!githubLabelsToCheck[ritual.autoIssue.repo]){
+                  // Create an empty array if an array does not exist for this repo.
+                  githubLabelsToCheck[ritual.autoIssue.repo] = [];
+                }
+                // Add this label to the array of labels to check. We'll check to see if all labels are valid at the after we've processed all rituals YAML files.
+                githubLabelsToCheck[ritual.autoIssue.repo].push({
+                  label: label,
+                  ritualUsingLabel: ritual.task,
+                  ritualsYamlFilePath: relativeRepoPathForThisRitualsFile
+                });
+              }//∞
+            }
+
+          }
+          // Add the rituals from this file to the rituals dictionary, using the file's relativeRepoPath (e.g, handbook/company/rituals.md) as a key.
+          rituals[relativeRepoPathForThisRitualsFile] = ritualsFromRitualTableYaml;
+
+        }//∞
+        if(githubAccessToken) {
+        // Validate all GitHub labels used in all ritual yaml files. Note: We check these here to minimize requests to the GitHub API.
+          for(let repo in githubLabelsToCheck){
+            let allExistingLabelsInSpecifiedRepo = [];
+            let pageOfResultsReturned = 0;
+            // Get all the labels in the specified repo.
+            await sails.helpers.flow.until(async ()=>{
+              let pageOfLabels = await sails.helpers.http.get.with({
+                url: `https://api.github.com/repos/fleetdm/${repo}/labels?per_page=100&page=${pageOfResultsReturned}`,
+                headers: baseHeadersForGithubRequests
+              });
+              allExistingLabelsInSpecifiedRepo = allExistingLabelsInSpecifiedRepo.concat(pageOfLabels);
+              pageOfResultsReturned++;
+              // This will stop running once all pages of labels in the specified GitHub repo have been returned.
+              return pageOfLabels.length < 100;
+            }, 10000);//∞   (maximum of 10s before giving up)
+            // Get an array containing only the names of labels.
+            let allLabelNamesInSpecifiedRepo = _.pluck(allExistingLabelsInSpecifiedRepo, 'name');
+            // Validate each label, if a label does not exist in the specified repo, throw an error.
+            await sails.helpers.flow.simultaneouslyForEach(githubLabelsToCheck[repo], async(labelInfo)=>{
+              if(!_.contains(allLabelNamesInSpecifiedRepo, labelInfo.label)){
+                throw new Error(`Could not build rituals from ${labelInfo.ritualsYamlFilePath}. The labels array nested within the autoIssue value of a ritual (${labelInfo.ritualUsingLabel}) contains an invalid GitHub label (${labelInfo.label}). To resolve, make sure all labels in the labels array are labels that exist in the repo that is soecificed in the .`);
+              }
+            });//∞
+          }
+        }//ﬁ
+
+        // Add the rituals dictionary to builtStaticContent.rituals
+        builtStaticContent.rituals = rituals;
+      },
+      //
+      //   █████╗ ██████╗ ██████╗     ██╗     ██╗██████╗ ██████╗  █████╗ ██████╗ ██╗   ██╗
+      //  ██╔══██╗██╔══██╗██╔══██╗    ██║     ██║██╔══██╗██╔══██╗██╔══██╗██╔══██╗╚██╗ ██╔╝
+      //  ███████║██████╔╝██████╔╝    ██║     ██║██████╔╝██████╔╝███████║██████╔╝ ╚████╔╝
+      //  ██╔══██║██╔═══╝ ██╔═══╝     ██║     ██║██╔══██╗██╔══██╗██╔══██║██╔══██╗  ╚██╔╝
+      //  ██║  ██║██║     ██║         ███████╗██║██████╔╝██║  ██║██║  ██║██║  ██║   ██║
+      //  ╚═╝  ╚═╝╚═╝     ╚═╝         ╚══════╝╚═╝╚═════╝ ╚═╝  ╚═╝╚═╝  ╚═╝╚═╝  ╚═╝   ╚═╝
+      //
+      async()=>{
+        let appLibrary = [];
+        // Get app library json
+        let appsJsonData = await sails.helpers.fs.readJson(path.join(topLvlRepoPath, '/server/mdm/maintainedapps/apps.json'));
+        // Then for each item in the json, build a configuration object to add to the sails.builtStaticContent.appLibrary array.
+        await sails.helpers.flow.simultaneouslyForEach(appsJsonData, async(app)=>{
+          let appInformation = {
+            identifier: app.identifier,
+            bundleIdentifier: app.bundle_identifier,
+            installerFormat: app.installer_format,
+          };
+          // Note: This method of getting information about the apps will be out of date until the JSON files in the /server/mdm/maintainedapps/testdata/ folder are updated.
+          let detailedInformationAboutThisApp = await sails.helpers.fs.readJson(path.join(topLvlRepoPath, '/server/mdm/maintainedapps/testdata/'+app.identifier+'.json'))
+          .intercept('doesNotExist', ()=>{
+            return new Error(`Could not build app library configuration from testdata folder. When attempting to read a JSON configuration file for ${app.identifier}, no file was found at ${path.join(topLvlRepoPath, '/server/mdm/maintainedapps/testdata/'+app.identifier+'.json. Was it moved?')}.`);
+          });
+
+          // Grab the latest information about these apps from the Homebrew API.
+          // let detailedInformationAboutThisApp = await sails.helpers.http.get(`https://formulae.brew.sh/api/cask/${app.identifier}.json`)
+          // .intercept((error)=>{
+          //   return new Error(`Could not build app library configuration. When attempting to send a request to the homebrew API to get the latest information about ${app.identifier}, an error occured. Full error: ${util.inspect(error, {depth: null})}`);
+          // });
+          let scriptToUninstallThisApp = await sails.helpers.fs.read(path.join(topLvlRepoPath, `/server/mdm/maintainedapps/testdata/scripts/${app.identifier}_uninstall.golden.sh`))
+          .intercept('doesNotExist', ()=>{
+            return new Error(`Could not build app library configuration from testdata folder. When attempting to read an uninstall script for ${app.identifier}, no file was found at ${path.join(topLvlRepoPath, '/server/mdm/maintainedapps/testdata/scripts/'+app.identifier+'_uninstall.golden.sh. Was it moved?')}.`);
+          });
+          // Remove lines that only contain comments.
+          scriptToUninstallThisApp = scriptToUninstallThisApp.replace(/^\s*#.*$/gm, '');
+
+          // Condense functions onto a single line.
+          // For each function in the script:
+          scriptToUninstallThisApp = scriptToUninstallThisApp.replace(/(\w+)\s*\(\)\s*\{([\s\S]*?)^\}/gm, (match, functionName, functionContent)=> {
+            // Split the function content into an array
+            let linesInFunction = functionContent.split('\n');
+
+            // Remove extra leading or trailing whitespace from each line.
+            linesInFunction = linesInFunction.map((line)=>{ return line.trim();});
+
+            // Remove any empty lines
+            linesInFunction = linesInFunction.filter((lineText)=>{
+              return lineText.length > 0;
+            });
+            // Iterate through the lines in the function, adding semicolons to lines with commands.
+            linesInFunction = linesInFunction.map((text, lineIndex, lines)=>{
+              // If this is not the last line in the function, and it does not only contain a control stucture keyword, append a semi colon to it.
+              if(lineIndex !== lines.length - 1 && !/^\s*(if|while|for|do|else|then|done|return)/.test(text)) {
+                return text + ';';
+              }
+              // Otherwise, do not add a semicolon
+              return text;
+            });
+            // Join the lines into a single string
+            let condensedBodyOfFunction = linesInFunction.join(' ');
+
+            // Return the condensed single-line function.
+            return `${functionName}() { ${condensedBodyOfFunction} }`;
+          });
+
+          // Remove newlines with "&&" and remove any that are added to the end and beginning of the condensed command.
+          scriptToUninstallThisApp = scriptToUninstallThisApp.replace(/\n\s*/g, ' && ').replace(/ && $/, '').replace(/^ && /, '');
+
+
+          appInformation.uninstallScript = scriptToUninstallThisApp;
+          appInformation.version = detailedInformationAboutThisApp.version.split(',')[0];
+          appInformation.description = detailedInformationAboutThisApp.desc;
+          appInformation.name = detailedInformationAboutThisApp.name[0];
+          appLibrary.push(appInformation);
+        });
+        builtStaticContent.appLibrary = appLibrary;
+      },
     ]);
-
     //  ██████╗ ███████╗██████╗ ██╗      █████╗  ██████╗███████╗       ███████╗ █████╗ ██╗██╗     ███████╗██████╗  ██████╗
     //  ██╔══██╗██╔════╝██╔══██╗██║     ██╔══██╗██╔════╝██╔════╝       ██╔════╝██╔══██╗██║██║     ██╔════╝██╔══██╗██╔════╝██╗
     //  ██████╔╝█████╗  ██████╔╝██║     ███████║██║     █████╗         ███████╗███████║██║██║     ███████╗██████╔╝██║     ╚═╝
@@ -722,7 +1386,6 @@ module.exports = {
         }
       });
     }
-
   }
 
 

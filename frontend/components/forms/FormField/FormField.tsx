@@ -3,33 +3,40 @@ import classnames from "classnames";
 import { isEmpty } from "lodash";
 
 import TooltipWrapper from "components/TooltipWrapper";
+import { PlacesType } from "react-tooltip-5";
 
+// all form-field styles are defined in _global.scss, which apply here and elsewhere
 const baseClass = "form-field";
 
 export interface IFormFieldProps {
   children: JSX.Element;
-  className: string;
-  error: string;
-  hint: Array<any> | JSX.Element | string;
   label: Array<any> | JSX.Element | string;
   name: string;
-  type: string;
-  tooltip?: string;
+  helpText?: Array<any> | JSX.Element | string;
+  type?: string;
+  error?: string;
+  className?: string;
+  tooltip?: React.ReactNode;
+  labelTooltipPosition?: PlacesType;
+  disabled?: boolean;
 }
 
 const FormField = ({
   children,
   className,
   error,
-  hint,
+  helpText,
   label,
   name,
   type,
   tooltip,
+  labelTooltipPosition,
+  disabled,
 }: IFormFieldProps): JSX.Element => {
   const renderLabel = () => {
     const labelWrapperClasses = classnames(`${baseClass}__label`, {
       [`${baseClass}__label--error`]: !isEmpty(error),
+      [`${baseClass}__label--disabled`]: disabled,
     });
 
     if (!label) {
@@ -44,7 +51,11 @@ const FormField = ({
       >
         {error ||
           (tooltip ? (
-            <TooltipWrapper tipContent={tooltip}>
+            <TooltipWrapper
+              tipContent={tooltip}
+              position={labelTooltipPosition}
+              clickable={false} // Not block form behind tooltip
+            >
               {label as string}
             </TooltipWrapper>
           ) : (
@@ -54,9 +65,9 @@ const FormField = ({
     );
   };
 
-  const renderHint = () => {
-    if (hint) {
-      return <span className={`${baseClass}__hint`}>{hint}</span>;
+  const renderHelpText = () => {
+    if (helpText) {
+      return <span className={`${baseClass}__help-text`}>{helpText}</span>;
     }
 
     return false;
@@ -74,7 +85,7 @@ const FormField = ({
     <div className={formFieldClass}>
       {renderLabel()}
       {children}
-      {renderHint()}
+      {renderHelpText()}
     </div>
   );
 };

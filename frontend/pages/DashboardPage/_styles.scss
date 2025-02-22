@@ -1,5 +1,7 @@
 .dashboard-page {
   background-color: $ui-off-white;
+  overflow: initial; // auto causes double scroll bar  but still needed for other pages .main-content div
+  padding-bottom: 60px; // replaces white padding on off-white page
 
   .data-error {
     &__inner {
@@ -22,10 +24,7 @@
   }
 
   &__header {
-    height: 38px;
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
+    @include normalize-team-header;
     margin-bottom: $pad-large;
 
     .Select-control {
@@ -61,7 +60,7 @@
     }
   }
 
-  &__platform_dropdown {
+  &__platform-filter {
     width: 138px;
   }
 
@@ -71,7 +70,7 @@
     display: grid;
     row-gap: $pad-medium;
 
-    @media screen and (min-width: 990px) {
+    @media screen and (min-width: $break-md) {
       grid-template-columns: repeat(2, minmax(0, 1fr));
       column-gap: $pad-medium;
 
@@ -83,8 +82,24 @@
     }
   }
 
-  .host-sections {
-    position: relative;
+  &__host-sections {
+    display: flex;
+    flex-direction: column;
+    margin-top: $pad-medium;
+  }
+
+  // >= 320px 12 pt gap
+  @media (min-width: $break-mobile-xs) {
+    .dashboard-page__host-sections {
+      gap: $pad-smedium;
+    }
+  }
+
+  // >= 880px 16pt gap
+  @media (min-width: $break-sm) {
+    .dashboard-page__host-sections {
+      gap: $pad-medium;
+    }
   }
 
   .spinner {

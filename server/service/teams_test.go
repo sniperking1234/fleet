@@ -2,7 +2,6 @@ package service
 
 import (
 	"context"
-	"database/sql"
 	"encoding/json"
 	"errors"
 	"testing"
@@ -13,6 +12,7 @@ import (
 	"github.com/fleetdm/fleet/v4/server/fleet"
 	"github.com/fleetdm/fleet/v4/server/mock"
 	"github.com/fleetdm/fleet/v4/server/ptr"
+	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
 
@@ -27,7 +27,9 @@ func TestTeamAuth(t *testing.T) {
 	ds.NewTeamFunc = func(ctx context.Context, team *fleet.Team) (*fleet.Team, error) {
 		return &fleet.Team{}, nil
 	}
-	ds.NewActivityFunc = func(ctx context.Context, user *fleet.User, activity fleet.ActivityDetails) error {
+	ds.NewActivityFunc = func(
+		ctx context.Context, user *fleet.User, activity fleet.ActivityDetails, details []byte, createdAt time.Time,
+	) error {
 		return nil
 	}
 	ds.TeamFunc = func(ctx context.Context, tid uint) (*fleet.Team, error) {
@@ -51,8 +53,9 @@ func TestTeamAuth(t *testing.T) {
 	ds.ApplyEnrollSecretsFunc = func(ctx context.Context, teamID *uint, secrets []*fleet.EnrollSecret) error {
 		return nil
 	}
-	ds.BulkSetPendingMDMAppleHostProfilesFunc = func(ctx context.Context, hids, tids, pids []uint, uuids []string) error {
-		return nil
+	ds.BulkSetPendingMDMHostProfilesFunc = func(ctx context.Context, hids, tids []uint, puuids, uuids []string,
+	) (updates fleet.MDMProfilesUpdates, err error) {
+		return fleet.MDMProfilesUpdates{}, nil
 	}
 	ds.ListHostsFunc = func(ctx context.Context, filter fleet.TeamFilter, opt fleet.HostListOptions) ([]*fleet.Host, error) {
 		return []*fleet.Host{}, nil
@@ -188,7 +191,7 @@ func TestTeamAuth(t *testing.T) {
 			_, err = svc.ModifyTeamEnrollSecrets(ctx, 1, []fleet.EnrollSecret{{Secret: "newteamsecret", CreatedAt: time.Now()}})
 			checkAuthErr(t, tt.shouldFailTeamSecretsWrite, err)
 
-			err = svc.ApplyTeamSpecs(ctx, []*fleet.TeamSpec{{Name: "team1"}}, fleet.ApplySpecOptions{})
+			_, err = svc.ApplyTeamSpecs(ctx, []*fleet.TeamSpec{{Name: "team1"}}, fleet.ApplyTeamSpecOptions{})
 			checkAuthErr(t, tt.shouldFailTeamWrite, err)
 		})
 	}
@@ -262,7 +265,7 @@ func TestApplyTeamSpecs(t *testing.T) {
 		for _, tt := range cases {
 			t.Run(tt.name, func(t *testing.T) {
 				ds.TeamByNameFunc = func(ctx context.Context, name string) (*fleet.Team, error) {
-					return nil, sql.ErrNoRows
+					return nil, newNotFoundError()
 				}
 
 				ds.AppConfigFunc = func(ctx context.Context) (*fleet.AppConfig, error) {
@@ -276,13 +279,15 @@ func TestApplyTeamSpecs(t *testing.T) {
 					return team, nil
 				}
 
-				ds.NewActivityFunc = func(ctx context.Context, user *fleet.User, activity fleet.ActivityDetails) error {
+				ds.NewActivityFunc = func(
+					ctx context.Context, user *fleet.User, activity fleet.ActivityDetails, details []byte, createdAt time.Time,
+				) error {
 					act := activity.(fleet.ActivityTypeAppliedSpecTeam)
 					require.Len(t, act.Teams, 1)
 					return nil
 				}
 
-				err := svc.ApplyTeamSpecs(ctx, []*fleet.TeamSpec{{Name: "team1", Features: tt.spec}}, fleet.ApplySpecOptions{})
+				_, err := svc.ApplyTeamSpecs(ctx, []*fleet.TeamSpec{{Name: "team1", Features: tt.spec}}, fleet.ApplyTeamSpecOptions{})
 				require.NoError(t, err)
 			})
 		}
@@ -350,24 +355,109 @@ func TestApplyTeamSpecs(t *testing.T) {
 		for _, tt := range cases {
 			t.Run(tt.name, func(t *testing.T) {
 				ds.TeamByNameFunc = func(ctx context.Context, name string) (*fleet.Team, error) {
-					return &fleet.Team{Config: fleet.TeamConfig{Features: tt.old}}, nil
+					return &fleet.Team{ID: 123, Config: fleet.TeamConfig{Features: tt.old}}, nil
 				}
 
 				ds.SaveTeamFunc = func(ctx context.Context, team *fleet.Team) (*fleet.Team, error) {
-					return &fleet.Team{}, nil
+					return &fleet.Team{ID: 123}, nil
 				}
 
-				ds.NewActivityFunc = func(ctx context.Context, user *fleet.User, activity fleet.ActivityDetails) error {
+				ds.NewActivityFunc = func(
+					ctx context.Context, user *fleet.User, activity fleet.ActivityDetails, details []byte, createdAt time.Time,
+				) error {
 					act := activity.(fleet.ActivityTypeAppliedSpecTeam)
 					require.Len(t, act.Teams, 1)
 					return nil
 				}
 
-				err := svc.ApplyTeamSpecs(ctx, []*fleet.TeamSpec{{Name: "team1", Features: tt.spec}}, fleet.ApplySpecOptions{})
+				idsByTeam, err := svc.ApplyTeamSpecs(
+					ctx, []*fleet.TeamSpec{{Name: "team1", Features: tt.spec}}, fleet.ApplyTeamSpecOptions{},
+				)
 				require.NoError(t, err)
+				require.Len(t, idsByTeam, 1)
+				require.Equal(t, uint(123), idsByTeam["team1"])
 			})
 		}
 	})
+}
+
+// Tests that a new enroll secret is created for new teams when none are provided
+func TestApplyTeamSpecEnrollSecretForNewTeams(t *testing.T) {
+	ds := new(mock.Store)
+	license := &fleet.LicenseInfo{Tier: fleet.TierPremium, Expiration: time.Now().Add(24 * time.Hour)}
+	svc, ctx := newTestService(t, ds, nil, nil, &TestServerOpts{License: license, SkipCreateTestUsers: true})
+	user := &fleet.User{GlobalRole: ptr.String(fleet.RoleAdmin)}
+	ctx = viewer.NewContext(ctx, viewer.Viewer{User: user})
+
+	ds.TeamByNameFunc = func(ctx context.Context, name string) (*fleet.Team, error) {
+		return nil, newNotFoundError()
+	}
+
+	ds.AppConfigFunc = func(ctx context.Context) (*fleet.AppConfig, error) {
+		return &fleet.AppConfig{}, nil
+	}
+
+	ds.NewActivityFunc = func(
+		ctx context.Context, user *fleet.User, activity fleet.ActivityDetails, details []byte, createdAt time.Time,
+	) error {
+		return nil
+	}
+
+	t.Run("creates enroll secret when not included for a new team spec", func(t *testing.T) {
+		ds.NewTeamFunc = func(ctx context.Context, team *fleet.Team) (*fleet.Team, error) {
+			require.Len(t, team.Secrets, 1)
+			require.NotEmpty(t, team.Secrets[0])
+			return &fleet.Team{ID: 1}, nil
+		}
+
+		_, err := svc.ApplyTeamSpecs(ctx, []*fleet.TeamSpec{{Name: "Foo"}}, fleet.ApplyTeamSpecOptions{})
+		require.NoError(t, err)
+		require.True(t, ds.TeamByNameFuncInvoked)
+		require.True(t, ds.NewTeamFuncInvoked)
+	})
+
+	t.Run("does not create enroll secret when one is included for a new team spec", func(t *testing.T) {
+		ds.NewTeamFuncInvoked = false
+		enrollSecret := fleet.EnrollSecret{Secret: "test"}
+
+		ds.NewTeamFunc = func(ctx context.Context, team *fleet.Team) (*fleet.Team, error) {
+			require.Len(t, team.Secrets, 1)
+			require.Equal(t, enrollSecret.Secret, team.Secrets[0].Secret)
+			return &fleet.Team{ID: 1}, nil
+		}
+		ds.NewTeamFuncInvoked = false
+
+		// Dry run -- secret already used
+		ds.IsEnrollSecretAvailableFunc = func(ctx context.Context, secret string, new bool, teamID *uint) (bool, error) {
+			return false, nil
+		}
+		_, err := svc.ApplyTeamSpecs(
+			ctx, []*fleet.TeamSpec{{Name: "Foo", Secrets: &[]fleet.EnrollSecret{enrollSecret}}},
+			fleet.ApplyTeamSpecOptions{ApplySpecOptions: fleet.ApplySpecOptions{DryRun: true}},
+		)
+		assert.ErrorContains(t, err, "is already being used")
+
+		// Normal dry run
+		ds.IsEnrollSecretAvailableFunc = func(ctx context.Context, secret string, new bool, teamID *uint) (bool, error) {
+			return true, nil
+		}
+		_, err = svc.ApplyTeamSpecs(
+			ctx, []*fleet.TeamSpec{{Name: "Foo", Secrets: &[]fleet.EnrollSecret{enrollSecret}}},
+			fleet.ApplyTeamSpecOptions{ApplySpecOptions: fleet.ApplySpecOptions{DryRun: true}},
+		)
+		assert.NoError(t, err)
+		assert.False(t, ds.NewTeamFuncInvoked)
+
+		_, err = svc.ApplyTeamSpecs(
+			ctx, []*fleet.TeamSpec{{Name: "Foo", Secrets: &[]fleet.EnrollSecret{enrollSecret}}}, fleet.ApplyTeamSpecOptions{},
+		)
+		require.NoError(t, err)
+		require.True(t, ds.TeamByNameFuncInvoked)
+		require.True(t, ds.NewTeamFuncInvoked)
+	})
+
+	ds.TeamByNameFuncInvoked = false
+	ds.NewTeamFuncInvoked = false
 }
 
 // TestApplyTeamSpecsErrorInTeamByName tests that an error in ds.TeamByName will
@@ -383,7 +473,7 @@ func TestApplyTeamSpecsErrorInTeamByName(t *testing.T) {
 	}
 	authzctx := &authz_ctx.AuthorizationContext{}
 	ctx = authz_ctx.NewContext(ctx, authzctx)
-	err := svc.ApplyTeamSpecs(ctx, []*fleet.TeamSpec{{Name: "Foo"}}, fleet.ApplySpecOptions{})
+	_, err := svc.ApplyTeamSpecs(ctx, []*fleet.TeamSpec{{Name: "Foo"}}, fleet.ApplyTeamSpecOptions{})
 	require.Error(t, err)
 	az, ok := authz_ctx.FromContext(ctx)
 	require.True(t, ok)

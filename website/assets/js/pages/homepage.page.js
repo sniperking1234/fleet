@@ -3,11 +3,21 @@ parasails.registerPage('homepage', {
   //  ║║║║║ ║ ║╠═╣║    ╚═╗ ║ ╠═╣ ║ ║╣
   //  ╩╝╚╝╩ ╩ ╩╩ ╩╩═╝  ╚═╝ ╩ ╩ ╩ ╩ ╚═╝
   data: {
-    currentTweetPage: 0,
-    numberOfTweetCards: 6,
-    numberOfTweetPages: 0,
-    numberOfTweetsPerPage: 0,
-    tweetCardWidth: 0,
+    modal: undefined,
+    selectedCategory: 'mdm',
+    formData: { /* … */ },
+    formErrors: { /* … */ },
+
+    // Form rules
+    formRules: {
+      emailAddress: {isEmail: true, required: true},
+    },
+    animationDelayInMs: 1200,
+    syncing: false,
+
+    // Server error state for the form
+    cloudError: '',
+    cloudSuccess: false,
   },
 
   //  ╦  ╦╔═╗╔═╗╔═╗╦ ╦╔═╗╦  ╔═╗
@@ -15,72 +25,84 @@ parasails.registerPage('homepage', {
   //  ╩═╝╩╚  ╚═╝╚═╝ ╩ ╚═╝╩═╝╚═╝
   beforeMount: function() {
     //…
+    if(window.location.hash === '#unsubscribed'){
+      this.modal = 'unsubscribed';
+      window.location.hash = '';
+    }
   },
-  mounted: async function(){
-    await this.updateNumberOfTweetPages(); // Update the number of pages for the tweet page indicator.
-    const tweetsDiv = document.querySelector('div[purpose="tweets"]');
-    tweetsDiv.addEventListener('scroll', this.updatePageIndicator, {passive: true}); // Add a scroll event listener to update the tweet page indicator when a user scrolls the div.
-    window.addEventListener('resize', this.updateNumberOfTweetPages); // Add an event listener to update the number of tweet pages based on how many tweet cards can fit on the screen.
+  mounted: async function() {
+    this.animateHeroTicker();
+    if(['mdm', 'eo-it', undefined].includes(this.primaryBuyingSituation)){
+      this.animateBottomTicker();
+    }
   },
 
   //  ╦╔╗╔╔╦╗╔═╗╦═╗╔═╗╔═╗╔╦╗╦╔═╗╔╗╔╔═╗
   //  ║║║║ ║ ║╣ ╠╦╝╠═╣║   ║ ║║ ║║║║╚═╗
   //  ╩╝╚╝ ╩ ╚═╝╩╚═╩ ╩╚═╝ ╩ ╩╚═╝╝╚╝╚═╝
   methods: {
-
-    updateNumberOfTweetPages: async function() {
-      // Get the width of the first tweet card.
-      let firstTweetCardDiv = document.querySelector('div[purpose="tweet-card"]');
-      this.tweetCardWidth = firstTweetCardDiv.clientWidth + 16;
-      // Find out how may entire cards can fit on the screen.
-      this.numberOfTweetsPerPage = Math.floor(window.innerWidth / this.tweetCardWidth);
-      // Find out how many pages of tweet cards there will be.
-      this.numberOfTweetPages = Math.ceil(this.numberOfTweetCards / this.numberOfTweetsPerPage);
-      if(this.numberOfTweetPages < 1){
-        this.numberOfTweetPages = 1;
-      } else if (this.numberOfTweetPages > this.numberOfTweetCards) {
-        this.numberOfTweetPages = this.numberOfTweetCards;
-      }
-      // Update the current page indicator.
-      this.updatePageIndicator();
-      await this.forceRender();
+    animateHeroTicker: function() {
+      // Animate the ticker in the top heading.
+      setInterval(()=>{
+        let currentTickerOption = $('[purpose="hero-ticker-option"].visible');
+        if(currentTickerOption) {
+          if (currentTickerOption.length === 0) {
+            currentTickerOption = $('[purpose="hero-ticker-option"]').first();
+            currentTickerOption.addClass('visible');
+            return;
+          }
+          // [?]:https://api.jquery.com/nextAll/#nextAll-selector
+          let nextTickerOption = currentTickerOption.nextAll('[purpose="hero-ticker-option"]').first();
+          // If we've reached the end of the list, pick the first option to be the next ticker option
+          if (nextTickerOption.length === 0) {
+            nextTickerOption = $('span[purpose="hero-ticker-option"]').first();
+          }
+          currentTickerOption.removeClass('visible').addClass('animating-out');
+          nextTickerOption.addClass('visible');
+          setTimeout(()=>{
+            currentTickerOption.removeClass('animating-out');
+          }, 1000);
+        }
+      }, this.animationDelayInMs);
+    },
+    animateBottomTicker: function() {
+      // Animate the ticker in the bottom heading on the page (Currently only agnostic, mdm, and eo-it personalized views)
+      setInterval(()=>{
+        let currentTickerOption = $('[purpose="bottom-cta-ticker-option"].visible');
+        if(currentTickerOption) {
+          if (currentTickerOption.length === 0) {
+            currentTickerOption = $('[purpose="bottom-cta-ticker-option"]').first();
+            currentTickerOption.addClass('visible');
+            return;
+          }
+          // [?]:https://api.jquery.com/nextAll/#nextAll-selector
+          let nextTickerOption = currentTickerOption.nextAll('[purpose="bottom-cta-ticker-option"]').first();
+          // If we've reached the end of the list, pick the first option to be the next ticker option
+          if (nextTickerOption.length === 0) {
+            nextTickerOption = $('span[purpose="bottom-cta-ticker-option"]').first();
+          }
+          currentTickerOption.removeClass('visible').addClass('animating-out');
+          nextTickerOption.addClass('visible');
+          setTimeout(()=>{
+            currentTickerOption.removeClass('animating-out');
+          }, 1000);
+        }
+      }, this.animationDelayInMs);
+    },
+    clickOpenVideoModal: function(modalName) {
+      this.modal = modalName;
     },
 
-    updatePageIndicator: function() {
-      // Get the tweets div.
-      let tweetsDiv = document.querySelector('div[purpose="tweets"]');
-      // Find out the width of a page of tweet cards
-      let tweetPageWidth;
-      if(this.numberOfTweetPages === 2 && this.numberOfTweetsPerPage > 3){
-        tweetPageWidth = this.tweetCardWidth;
-      } else {
-        tweetPageWidth = this.tweetCardWidth * this.numberOfTweetsPerPage;
-      }
-      // Set the maximum number of pages as the maximum value
-      let currentPage = Math.min(Math.round(tweetsDiv.scrollLeft / tweetPageWidth), (this.numberOfTweetPages - 1));
-      // Update the page indicator
-      this.currentTweetPage = currentPage;
+    closeModal: function() {
+      this.modal = undefined;
     },
-
-    scrollTweetsDivToPage: function(page) {
-      // Get the tweets div.
-      let tweetsDiv = document.querySelector('div[purpose="tweets"]');
-      // Find out the width of a page of tweet cards
-      let pageWidth = this.tweetCardWidth * this.numberOfTweetsPerPage;
-      // Figure out how much distance we're expecting to scroll.
-      let baseAmountToScroll = (page - this.currentTweetPage) * pageWidth;
-      // Find out the actual distance the div has been scrolled
-      let amountCurrentPageHasBeenScrolled = tweetsDiv.scrollLeft - (this.currentTweetPage * pageWidth);
-      // subtract the amount the current page has been scrolled from the baseAmountToScroll
-      let amountToScroll = baseAmountToScroll - amountCurrentPageHasBeenScrolled;
-      // Scroll the div to the specified 'page'
-      tweetsDiv.scrollBy(amountToScroll, 0);
-    },
-
-    clickOpenChatWidget: function() {
-      if(window.HubSpotConversations && window.HubSpotConversations.widget){
-        window.HubSpotConversations.widget.open();
-      }
+    submittedNewsletterForm: async function() {
+      // Show the success message.
+      this.cloudSuccess = true;
+      this.formData = {};
+      await setTimeout(()=>{
+        this.cloudSuccess = false;
+      }, 10000);
     },
   }
 });

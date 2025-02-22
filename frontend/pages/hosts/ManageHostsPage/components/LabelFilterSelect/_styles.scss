@@ -1,9 +1,19 @@
 .label-filter-select {
-  width: 175px;
+  width: 300px;
+
+  svg {
+    transition: transform 0.25s ease;
+  }
 
   &:hover {
     // no access to hover state from react-select in JS so this is done here.
     .custom-dropdown-indicator {
+      & path {
+        stroke: $core-vibrant-blue;
+      }
+    }
+
+    .filter-icon {
       & path {
         fill: $core-vibrant-blue;
       }
@@ -16,26 +26,35 @@
     border-radius: $border-radius;
     height: 40px;
 
+    :hover {
+      cursor: pointer;
+    }
+
     &--is-focused,
     &--menu-is-open,
     &:hover {
       box-shadow: none;
       border: 1px solid $core-vibrant-blue;
     }
+    &--menu-is-open {
+      .custom-dropdown-indicator {
+        svg {
+          transform: rotate(180deg);
+          transition: transform 0.25s ease;
+        }
+      }
+      .filter-icon {
+        & path {
+          fill: $core-vibrant-blue;
+        }
+      }
+    }
   }
 
   .label-filter-select__value-container {
-    margin-left: 10px;
-    padding-left: 27px;
-
-    &::before {
-      display: inline-block;
-      position: absolute;
-      content: url(../assets/images/icon-filter-v2-black-16x16@2x.png);
-      transform: scale(0.5);
-      left: -6px;
-      top: -1px;
-    }
+    display: flex;
+    gap: $pad-small;
+    margin-left: $pad-xsmall;
   }
 
   .label-filter-select__single-value,
@@ -44,13 +63,17 @@
     font-size: $small;
   }
 
+  .label-filter-select__single-value {
+    max-width: 84%; // Must override default styling of .css-qc6sy-singleValue
+  }
+
   .label-filter-select__placeholder {
-    width: 75px;
+    width: 215px; // Any larger runs into indicator
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
 
-    @media (max-width: $break-990) {
+    @media (max-width: $table-controls-break) {
       width: auto;
     }
   }
@@ -61,6 +84,9 @@
 
   .label-filter-select__indicator {
     color: $core-fleet-black;
+    // override react-select default styles to increase flexibility of dropdown styling
+    padding: 0;
+    padding-right: $pad-small;
   }
 
   .label-filter-select__menu {
@@ -77,14 +103,28 @@
 
   .label-filter-select__option {
     padding: 10px 1rem;
+    border-radius: $border-radius;
 
-    &--is-selected,
-    &:active {
-      background-color: $ui-vibrant-blue-25;
+    &:hover {
+      cursor: pointer;
+    }
+
+    &--is-selected {
+      background-color: transparent;
+
+      .option-label {
+        span {
+          font-weight: $bold;
+        }
+      }
     }
 
     &--is-focused {
       background-color: $ui-vibrant-blue-10;
+
+      &:active {
+        background-color: $ui-vibrant-blue-25;
+      }
     }
 
     &--is-disabled {
@@ -119,6 +159,16 @@
   &__custom-dropdown-indicator {
     &:hover {
       cursor: pointer;
+    }
+  }
+}
+
+@media (min-width: $table-controls-break) {
+  .label-filter-select {
+    min-width: 220px;
+
+    &__single-value {
+      max-width: 210px !important; // Must override default styling of .css-qc6sy-singleValue
     }
   }
 }

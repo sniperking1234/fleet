@@ -8,6 +8,7 @@
 		"detail_updated_at": "0001-01-01T00:00:00Z",
 		"label_updated_at": "0001-01-01T00:00:00Z",
 		"last_enrolled_at": "0001-01-01T00:00:00Z",
+		"last_restarted_at": "0001-01-01T00:00:00Z",
 		"seen_time": "0001-01-01T00:00:00Z",
 		"software_updated_at": "0001-01-01T00:00:00Z",
 		"refetch_requested": false,
@@ -17,6 +18,9 @@
 		"uuid": "",
 		"platform": "",
 		"osquery_version": "",
+		"orbit_version": null,
+		"fleet_desktop_version": null,
+		"scripts_enabled": null,
 		"os_version": "",
 		"build": "",
 		"platform_like": "",
@@ -41,10 +45,12 @@
 		"config_tls_refresh": 0,
 		"logger_tls_period": 0,
 		"mdm": {
+			"dep_profile_error": false,
 			"encryption_key_available": false,
 			"enrollment_status": null,
 			"name": "",
-			"server_url": null
+			"server_url": null,
+			"connected_to_fleet": null
 		},
 		"team_id": null,
 		"pack_stats": null,
@@ -59,6 +65,7 @@
 		},
 		"gigs_disk_space_available": 0,
 		"percent_disk_space_available": 0,
+		"gigs_total_disk_space": 0,
 		"issues": {
 			"total_issues_count": 0,
 			"failing_policies_count": 0
@@ -77,6 +84,7 @@
 		"detail_updated_at": "0001-01-01T00:00:00Z",
 		"label_updated_at": "0001-01-01T00:00:00Z",
 		"last_enrolled_at": "0001-01-01T00:00:00Z",
+		"last_restarted_at": "0001-01-01T00:00:00Z",
 		"seen_time": "0001-01-01T00:00:00Z",
 		"software_updated_at": "0001-01-01T00:00:00Z",
 		"refetch_requested": false,
@@ -85,6 +93,9 @@
 		"uuid": "",
 		"platform": "",
 		"osquery_version": "",
+		"orbit_version": null,
+		"fleet_desktop_version": null,
+		"scripts_enabled": null,
 		"os_version": "",
 		"build": "",
 		"platform_like": "",
@@ -110,16 +121,19 @@
 		"config_tls_refresh": 0,
 		"logger_tls_period": 0,
 		"mdm": {
+			"dep_profile_error": false,
 			"encryption_key_available": false,
 			"enrollment_status": null,
 			"name": "",
-			"server_url": null
+			"server_url": null,
+			"connected_to_fleet": null
 		},
 		"team_id": null,
 		"pack_stats": null,
 		"team_name": null,
 		"gigs_disk_space_available": 0,
 		"percent_disk_space_available": 0,
+		"gigs_total_disk_space": 0,
 		"issues": {
 			"total_issues_count": 0,
 			"failing_policies_count": 0

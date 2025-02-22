@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"sync"
 	"time"
@@ -16,20 +17,23 @@ import (
 	"github.com/rs/zerolog/log"
 )
 
-const nudgeConfigFile = "nudge-config.json"
-const nudgeConfigFileMode = os.FileMode(constant.DefaultWorldReadableFileMode)
+const (
+	nudgeConfigFile     = "nudge-config.json"
+	nudgeConfigFileMode = os.FileMode(constant.DefaultWorldReadableFileMode)
+)
 
-// NudgeConfigFetcher is a kind of middleware that wraps an OrbitConfigFetcher and a Runner.
+// NudgeConfigReceiver is a kind of middleware that wraps an OrbitConfigFetcher and a Runner.
 // It checks the config supplied by the wrapped OrbitConfigFetcher to detects whether the Fleet
 // server has supplied a Nudge config. If so, it sets Nudge as a target on the wrapped Runner.
-type NudgeConfigFetcher struct {
-	// Fetcher is the OrbitConfigFetcher that will be wrapped. It is responsible
-	// for actually returning the orbit configuration or an error.
-	Fetcher OrbitConfigFetcher
-	opt     NudgeConfigFetcherOptions
+type NudgeConfigReceiver struct {
+	opt NudgeConfigFetcherOptions
 	// ensures only one command runs at a time, protects access to lastRun
 	cmdMu   sync.Mutex
 	lastRun time.Time
+
+	// launchErr is set if Nudge fails to launch. If launchErr is set, we won't try to
+	// launch Nudge again.
+	launchErr *nudgeLaunchErr
 }
 
 type NudgeConfigFetcherOptions struct {
@@ -46,8 +50,8 @@ type NudgeConfigFetcherOptions struct {
 	runNudgeFn func(execPath, configPath string) error
 }
 
-func ApplyNudgeConfigFetcherMiddleware(f OrbitConfigFetcher, opt NudgeConfigFetcherOptions) OrbitConfigFetcher {
-	return &NudgeConfigFetcher{Fetcher: f, opt: opt}
+func ApplyNudgeConfigReceiverMiddleware(opt NudgeConfigFetcherOptions) fleet.OrbitConfigReceiver {
+	return &NudgeConfigReceiver{opt: opt}
 }
 
 // GetConfig calls the wrapped Fetcher's GetConfig method, and detects if the
@@ -58,17 +62,17 @@ func ApplyNudgeConfigFetcherMiddleware(f OrbitConfigFetcher, opt NudgeConfigFetc
 // - ensures that Nudge is installed and updated via the designated TUF server.
 // - ensures that Nudge is opened at an interval given by n.frequency with the
 // provided config.
-func (n *NudgeConfigFetcher) GetConfig() (*fleet.OrbitConfig, error) {
+func (n *NudgeConfigReceiver) Run(cfg *fleet.OrbitConfig) error {
 	log.Debug().Msg("running nudge config fetcher middleware")
-	cfg, err := n.Fetcher.GetConfig()
-	if err != nil {
-		log.Info().Err(err).Msg("calling GetConfig from NudgeConfigFetcher")
-		return nil, err
-	}
 
 	if cfg == nil {
-		log.Debug().Msg("NudgeConfigFetcher received nil config")
-		return nil, nil
+		log.Debug().Msg("NudgeConfigReceiver received nil config")
+		return nil
+	}
+
+	if n.opt.UpdateRunner == nil {
+		log.Debug().Msg("NudgeConfigReceiver received nil UpdateRunner, this probably indicates that updates are turned off. Skipping any actions related to Nudge")
+		return nil
 	}
 
 	if cfg.NudgeConfig == nil {
@@ -79,7 +83,7 @@ func (n *NudgeConfigFetcher) GetConfig() (*fleet.OrbitConfig, error) {
 		// knowingly decided to do this as a post MVP optimization.
 		n.opt.UpdateRunner.RemoveRunnerOptTarget("nudge")
 		n.opt.UpdateRunner.updater.RemoveTargetInfo("nudge")
-		return cfg, nil
+		return nil
 	}
 
 	updaterHasTarget := n.opt.UpdateRunner.HasRunnerOptTarget("nudge")
@@ -87,29 +91,29 @@ func (n *NudgeConfigFetcher) GetConfig() (*fleet.OrbitConfig, error) {
 	if !updaterHasTarget || !runnerHasLocalHash {
 		log.Info().Msg("refreshing the update runner config with Nudge targets and hashes")
 		log.Debug().Msgf("updater has target: %t, runner has local hash: %t", updaterHasTarget, runnerHasLocalHash)
-		return cfg, n.setTargetsAndHashes()
+		return n.setTargetsAndHashes()
 	}
 
 	if err := n.configure(*cfg.NudgeConfig); err != nil {
 		log.Info().Err(err).Msg("nudge configuration")
-		return cfg, err
+		return err
 	}
 
 	if err := n.launch(); err != nil {
 		log.Info().Err(err).Msg("nudge launch")
-		return cfg, err
+		return err
 	}
 
-	return cfg, nil
+	return nil
 }
 
-func (n *NudgeConfigFetcher) setTargetsAndHashes() error {
+func (n *NudgeConfigReceiver) setTargetsAndHashes() error {
 	n.opt.UpdateRunner.AddRunnerOptTarget("nudge")
 	n.opt.UpdateRunner.updater.SetTargetInfo("nudge", NudgeMacOSTarget)
 	// we don't want to keep nudge as a target if we failed to update the
 	// cached hashes in the runner.
 	if err := n.opt.UpdateRunner.StoreLocalHash("nudge"); err != nil {
-		log.Debug().Msgf("removing nudge from target options, error updating local hashes: %e", err)
+		log.Debug().Msgf("removing nudge from target options, error updating local hashes: %s", err)
 		n.opt.UpdateRunner.RemoveRunnerOptTarget("nudge")
 		n.opt.UpdateRunner.updater.RemoveTargetInfo("nudge")
 		return err
@@ -117,7 +121,7 @@ func (n *NudgeConfigFetcher) setTargetsAndHashes() error {
 	return nil
 }
 
-func (n *NudgeConfigFetcher) configure(nudgeCfg fleet.NudgeConfig) error {
+func (n *NudgeConfigReceiver) configure(nudgeCfg fleet.NudgeConfig) error {
 	jsonCfg, err := json.Marshal(nudgeCfg)
 	if err != nil {
 		return err
@@ -168,7 +172,7 @@ func (n *NudgeConfigFetcher) configure(nudgeCfg fleet.NudgeConfig) error {
 	return nil
 }
 
-func (n *NudgeConfigFetcher) launch() error {
+func (n *NudgeConfigReceiver) launch() error {
 	cfgFile := filepath.Join(n.opt.RootDir, nudgeConfigFile)
 
 	if n.cmdMu.TryLock() {
@@ -191,7 +195,15 @@ func (n *NudgeConfigFetcher) launch() error {
 			// make sure nudge is added as a target and the hashes
 			// are refreshed
 			if err := checkFileHash(meta, nudge.Path); err != nil {
+				n.launchErr = nil // reset launchErr since we're dealing with a different file
 				return n.setTargetsAndHashes()
+			}
+
+			// if we have a prior launch error, we won't try to launch nudge again
+			if n.launchErr != nil {
+				log.Info().Msgf("Nudge disabled since %s due to launch error: %v", n.launchErr.timestamp.Format("2006-01-02"), n.launchErr)
+				n.lastRun = time.Now()
+				return nil
 			}
 
 			fn := n.opt.runNudgeFn
@@ -210,14 +222,26 @@ func (n *NudgeConfigFetcher) launch() error {
 					// show up even if it's opened multiple times in that
 					// interval.
 					log.Info().Msg("running Nudge")
-					return execuser.Run(
+					_, err := execuser.Run(
 						appPath,
 						execuser.WithArg("-json-url", configPath),
 					)
+					return err
 				}
 			}
 
 			if err := fn(nudge.DirPath, fmt.Sprintf("file://%s", cfgFile)); err != nil {
+				if exitErr, ok := err.(*exec.ExitError); ok {
+					launchErr := &nudgeLaunchErr{
+						err:       err,
+						exitCode:  exitErr.ExitCode(),
+						detail:    string(exitErr.Stderr),
+						cfgFile:   cfgFile,
+						timestamp: time.Now(),
+					}
+					n.launchErr = launchErr
+					return fmt.Errorf("opening Nudge with config %q: %w", cfgFile, launchErr)
+				}
 				return fmt.Errorf("opening Nudge with config %q: %w", cfgFile, err)
 			}
 
@@ -226,4 +250,16 @@ func (n *NudgeConfigFetcher) launch() error {
 	}
 
 	return nil
+}
+
+type nudgeLaunchErr struct {
+	err       error
+	exitCode  int
+	detail    string
+	cfgFile   string
+	timestamp time.Time
+}
+
+func (e *nudgeLaunchErr) Error() string {
+	return fmt.Sprintf("%v: %s", e.err, e.detail)
 }

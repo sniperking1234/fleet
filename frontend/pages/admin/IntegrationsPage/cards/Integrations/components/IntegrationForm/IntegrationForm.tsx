@@ -5,7 +5,7 @@ import {
   IIntegrationFormData,
   IIntegrationTableData,
   IIntegration,
-  IIntegrations,
+  IZendeskJiraIntegrations,
   IIntegrationType,
 } from "interfaces/integration";
 
@@ -15,6 +15,8 @@ import InputField from "components/forms/fields/InputField";
 import validUrl from "components/forms/validators/valid_url";
 
 import Spinner from "components/Spinner";
+import { COLORS } from "styles/var/colors";
+import GitOpsModeTooltipWrapper from "components/GitOpsModeTooltipWrapper";
 
 const baseClass = "integration-form";
 
@@ -25,7 +27,7 @@ interface IIntegrationFormProps {
     integrationDestination: string
   ) => void;
   integrationEditing?: IIntegrationTableData;
-  integrations: IIntegrations;
+  integrations: IZendeskJiraIntegrations;
   integrationEditingUrl?: string;
   integrationEditingUsername?: string;
   integrationEditingEmail?: string;
@@ -36,6 +38,7 @@ interface IIntegrationFormProps {
   integrationEditingType?: IIntegrationType;
   destination?: string;
   testingConnection?: boolean;
+  gitOpsModeEnabled?: boolean;
 }
 
 interface IFormField {
@@ -58,6 +61,7 @@ const IntegrationForm = ({
   integrationEditingType,
   destination,
   testingConnection,
+  gitOpsModeEnabled,
 }: IIntegrationFormProps): JSX.Element => {
   const { jira: jiraIntegrations, zendesk: zendeskIntegrations } = integrations;
   const [formData, setFormData] = useState<IIntegrationFormData>({
@@ -88,7 +92,7 @@ const IntegrationForm = ({
   const validateForm = () => {
     let error = null;
 
-    if (url && !validUrl({ url, protocol: "https" })) {
+    if (url && !validUrl({ url, protocols: ["https"] })) {
       error = `${url} is not a valid HTTPS URL`;
     }
 
@@ -190,6 +194,7 @@ const IntegrationForm = ({
             value={url}
             error={urlError}
             onBlur={validateForm}
+            disabled={gitOpsModeEnabled}
           />
           {integrationDestination === "jira" ? (
             <InputField
@@ -199,6 +204,7 @@ const IntegrationForm = ({
               placeholder="name@example.com"
               parseTarget
               value={username}
+              disabled={gitOpsModeEnabled}
             />
           ) : (
             <InputField
@@ -208,6 +214,7 @@ const IntegrationForm = ({
               placeholder="name@example.com"
               parseTarget
               value={email}
+              disabled={gitOpsModeEnabled}
             />
           )}
           <InputField
@@ -216,6 +223,7 @@ const IntegrationForm = ({
             label="API token"
             parseTarget
             value={apiToken}
+            disabled={gitOpsModeEnabled}
           />
           {integrationDestination === "jira" ? (
             <InputField
@@ -225,13 +233,15 @@ const IntegrationForm = ({
               placeholder="JRAEXAMPLE"
               parseTarget
               value={projectKey}
+              disabled={gitOpsModeEnabled}
               tooltip={
-                "\
-              To find the Jira project key, head to your project in <br /> \
-              Jira. Your project key is located in the URL. For example, in <br /> \
-              “jira.example.com/projects/JRAEXAMPLE,” <br /> \
-              “JRAEXAMPLE” is your project key. \
-            "
+                <>
+                  To find the Jira project key, head to your project in <br />
+                  Jira. Your project key is located in the URL. For example, in{" "}
+                  <br />
+                  “jira.example.com/projects/JRAEXAMPLE,” <br />
+                  “JRAEXAMPLE” is your project key.
+                </>
               }
             />
           ) : (
@@ -243,38 +253,25 @@ const IntegrationForm = ({
               type="number"
               parseTarget
               value={groupId === 0 ? null : groupId}
+              disabled={gitOpsModeEnabled}
               tooltip={
-                "\
-              To find the Zendesk group ID, select <b>Admin > <br /> \
-              People > Groups</b>. Find the group and select it. <br /> \
-              The group ID will appear in the search field. \
-            "
+                <>
+                  To find the Zendesk group ID, select{" "}
+                  <b>
+                    Admin &gt; <br />
+                    People &gt; Groups
+                  </b>
+                  . Find the group and select it. <br />
+                  The group ID will appear in the search field.
+                </>
               }
             />
           )}
           <div className="modal-cta-wrap">
-            <div
-              data-tip
-              data-for="add-integration-button"
-              data-tip-disable={
-                !(integrationDestination === "jira"
-                  ? formData.url === "" ||
-                    formData.url.slice(0, 8) !== "https://" ||
-                    formData.username === "" ||
-                    formData.apiToken === "" ||
-                    formData.projectKey === ""
-                  : formData.url === "" ||
-                    formData.url.slice(0, 8) !== "https://" ||
-                    formData.email === "" ||
-                    formData.apiToken === "" ||
-                    formData.groupId === 0)
-              }
-              className={"tooltip"}
-            >
-              <Button
-                type="submit"
-                variant="brand"
-                disabled={
+            <GitOpsModeTooltipWrapper
+              tipOffset={8}
+              renderChildren={(disableChildren) => {
+                const formInvalid =
                   integrationDestination === "jira"
                     ? formData.url === "" ||
                       formData.url.slice(0, 8) !== "https://" ||
@@ -285,24 +282,40 @@ const IntegrationForm = ({
                       formData.url.slice(0, 8) !== "https://" ||
                       formData.email === "" ||
                       formData.apiToken === "" ||
-                      formData.groupId === 0
-                }
-              >
-                Save
-              </Button>
-            </div>
-            <ReactTooltip
-              className={`add-integration-tooltip`}
-              place="bottom"
-              effect="solid"
-              backgroundColor="#3e4771"
-              id="add-integration-button"
-              data-html
-            >
-              <>
-                Complete all fields to save <br /> the integration.
-              </>
-            </ReactTooltip>
+                      formData.groupId === 0;
+                // TODO - refactor below to use TooltipWrapper
+                return (
+                  <>
+                    <div
+                      data-tip
+                      data-for="add-integration-button"
+                      data-tip-disable={!formInvalid || disableChildren}
+                      className="tooltip"
+                    >
+                      <Button
+                        type="submit"
+                        variant="brand"
+                        disabled={formInvalid || disableChildren}
+                      >
+                        Save
+                      </Button>
+                    </div>
+                    <ReactTooltip
+                      className="add-integration-tooltip"
+                      place="bottom"
+                      effect="solid"
+                      backgroundColor={COLORS["tooltip-bg"]}
+                      id="add-integration-button"
+                      data-html
+                    >
+                      <>
+                        Complete all fields to save <br /> the integration.
+                      </>
+                    </ReactTooltip>
+                  </>
+                );
+              }}
+            />
             <Button onClick={onCancel} variant="inverse">
               Cancel
             </Button>

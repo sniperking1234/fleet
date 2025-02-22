@@ -30,18 +30,28 @@ export interface ISelectHost extends IHost {
 
 export interface ISelectLabel extends ILabelSummary {
   target_type?: string;
+  display_text?: string;
+  query?: string;
+  count?: number;
 }
 
 export interface ISelectTeam extends ITeam {
   target_type?: string;
+  display_text?: string;
 }
 
 export type ISelectTargetsEntity = ISelectHost | ISelectLabel | ISelectTeam;
 
-export interface ISelectedTargets {
+export interface ISelectedTargetsForApi {
   hosts: number[];
   labels: number[];
   teams: number[];
+}
+
+export interface ISelectedTargetsByType {
+  hosts: IHost[];
+  labels: ILabel[];
+  teams: ITeam[];
 }
 
 export interface IPackTargets {
@@ -49,3 +59,12 @@ export interface IPackTargets {
   label_ids: (number | string)[];
   team_ids: (number | string)[];
 }
+
+// TODO: Also use for testing
+export const DEFAULT_TARGETS: ITarget[] = [];
+
+export const DEFAULT_TARGETS_BY_TYPE: ISelectedTargetsByType = {
+  hosts: [],
+  labels: [],
+  teams: [],
+};

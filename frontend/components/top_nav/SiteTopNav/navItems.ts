@@ -11,6 +11,13 @@ export interface INavItem {
     pathname: string;
   };
   exclude?: boolean;
+  /** If `true`, this nav item will always navigate to the given `location.pathname`. This
+   * is useful when you want to always naviate to a specific path no matter
+   * which child page you are on (e.g. always navigate to /sofware/titles/ when
+   * clicking on the software nav item even if on /software/versions,
+   * software/titles/:id, or /software/versions/:id). Defaults to `undefined`.
+   */
+  alwaysToPathname?: boolean;
   withParams?: { type: "query"; names: string[] };
 }
 
@@ -20,8 +27,7 @@ export default (
   isAnyTeamAdmin = false,
   isAnyTeamMaintainer = false,
   isGlobalMaintainer = false,
-  isNoAccess = false,
-  isSandboxMode = false
+  isNoAccess = false
 ): INavItem[] => {
   if (!user) {
     return [];
@@ -60,15 +66,16 @@ export default (
         regex: new RegExp(`^${URL_PREFIX}/controls/`),
         pathname: PATHS.CONTROLS,
       },
-      exclude: isSandboxMode || !isMaintainerOrAdmin,
+      exclude: !isMaintainerOrAdmin,
       withParams: { type: "query", names: ["team_id"] },
     },
     {
       name: "Software",
       location: {
         regex: new RegExp(`^${URL_PREFIX}/software/`),
-        pathname: PATHS.MANAGE_SOFTWARE,
+        pathname: PATHS.SOFTWARE_TITLES,
       },
+      alwaysToPathname: true,
       withParams: { type: "query", names: ["team_id"] },
     },
     {
@@ -77,14 +84,6 @@ export default (
         regex: new RegExp(`^${URL_PREFIX}/queries/`),
         pathname: PATHS.MANAGE_QUERIES,
       },
-    },
-    {
-      name: "Schedule",
-      location: {
-        regex: new RegExp(`^${URL_PREFIX}/(schedule|packs)/`),
-        pathname: PATHS.MANAGE_SCHEDULE,
-      },
-      exclude: !isMaintainerOrAdmin,
       withParams: { type: "query", names: ["team_id"] },
     },
     {

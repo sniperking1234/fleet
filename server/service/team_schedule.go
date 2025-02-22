@@ -3,11 +3,17 @@ package service
 import (
 	"context"
 	"fmt"
+	"time"
 
+	"github.com/fleetdm/fleet/v4/server/contexts/ctxerr"
 	"github.com/fleetdm/fleet/v4/server/fleet"
 	"github.com/fleetdm/fleet/v4/server/ptr"
 	"gopkg.in/guregu/null.v3"
 )
+
+/////////////////////////////////////////////////////////////////////////////////
+// Get Scheduled Queries of a team.
+/////////////////////////////////////////////////////////////////////////////////
 
 type getTeamScheduleRequest struct {
 	TeamID      uint              `url:"team_id"`
@@ -19,9 +25,9 @@ type getTeamScheduleResponse struct {
 	Err       error                    `json:"error,omitempty"`
 }
 
-func (r getTeamScheduleResponse) error() error { return r.Err }
+func (r getTeamScheduleResponse) Error() error { return r.Err }
 
-func getTeamScheduleEndpoint(ctx context.Context, request interface{}, svc fleet.Service) (errorer, error) {
+func getTeamScheduleEndpoint(ctx context.Context, request interface{}, svc fleet.Service) (fleet.Errorer, error) {
 	req := request.(*getTeamScheduleRequest)
 	resp := getTeamScheduleResponse{Scheduled: []scheduledQueryResponse{}}
 	queries, err := svc.GetTeamScheduledQueries(ctx, req.TeamID, req.ListOptions)
@@ -37,22 +43,23 @@ func getTeamScheduleEndpoint(ctx context.Context, request interface{}, svc fleet
 }
 
 func (svc Service) GetTeamScheduledQueries(ctx context.Context, teamID uint, opts fleet.ListOptions) ([]*fleet.ScheduledQuery, error) {
-	if err := svc.authz.Authorize(ctx, &fleet.Pack{
-		Type: ptr.String(fmt.Sprintf("team-%d", teamID)),
-	}, fleet.ActionRead); err != nil {
-		return nil, err
+	var teamID_ *uint
+	if teamID != 0 {
+		teamID_ = &teamID
 	}
-
-	gp, err := svc.ds.EnsureTeamPack(ctx, teamID)
+	queries, _, _, err := svc.ListQueries(ctx, opts, teamID_, ptr.Bool(true), false, nil)
 	if err != nil {
 		return nil, err
 	}
-
-	return svc.ds.ListScheduledQueriesInPackWithStats(ctx, gp.ID, opts)
+	scheduledQueries := make([]*fleet.ScheduledQuery, 0, len(queries))
+	for _, query := range queries {
+		scheduledQueries = append(scheduledQueries, fleet.ScheduledQueryFromQuery(query))
+	}
+	return scheduledQueries, nil
 }
 
 /////////////////////////////////////////////////////////////////////////////////
-// Add
+// Add schedule query to a team.
 /////////////////////////////////////////////////////////////////////////////////
 
 type teamScheduleQueryRequest struct {
@@ -65,7 +72,7 @@ type teamScheduleQueryResponse struct {
 	Err       error                 `json:"error,omitempty"`
 }
 
-func (r teamScheduleQueryResponse) error() error { return r.Err }
+func (r teamScheduleQueryResponse) Error() error { return r.Err }
 
 func uintValueOrZero(v *uint) uint {
 	if v == nil {
@@ -78,10 +85,10 @@ func nullIntToPtrUint(v *null.Int) *uint {
 	if v == nil {
 		return nil
 	}
-	return ptr.Uint(uint(v.ValueOrZero()))
+	return ptr.Uint(uint(v.ValueOrZero())) //nolint:gosec // dismiss G115
 }
 
-func teamScheduleQueryEndpoint(ctx context.Context, request interface{}, svc fleet.Service) (errorer, error) {
+func teamScheduleQueryEndpoint(ctx context.Context, request interface{}, svc fleet.Service) (fleet.Errorer, error) {
 	req := request.(*teamScheduleQueryRequest)
 	resp, err := svc.TeamScheduleQuery(ctx, req.TeamID, &fleet.ScheduledQuery{
 		QueryID:  uintValueOrZero(req.QueryID),
@@ -100,24 +107,31 @@ func teamScheduleQueryEndpoint(ctx context.Context, request interface{}, svc fle
 	}, nil
 }
 
-func (svc Service) TeamScheduleQuery(ctx context.Context, teamID uint, q *fleet.ScheduledQuery) (*fleet.ScheduledQuery, error) {
-	if err := svc.authz.Authorize(ctx, &fleet.Pack{
-		Type: ptr.String(fmt.Sprintf("team-%d", teamID)),
-	}, fleet.ActionWrite); err != nil {
-		return nil, err
-	}
+func nameForCopiedQuery(originalName string) string {
+	return "Copy of " + originalName + " (" + fmt.Sprintf("%d", time.Now().Unix()) + ")"
+}
 
-	gp, err := svc.ds.EnsureTeamPack(ctx, teamID)
+func (svc Service) TeamScheduleQuery(ctx context.Context, teamID uint, scheduledQuery *fleet.ScheduledQuery) (*fleet.ScheduledQuery, error) {
+	originalQuery, err := svc.ds.Query(ctx, scheduledQuery.QueryID)
+	if err != nil {
+		setAuthCheckedOnPreAuthErr(ctx)
+		return nil, ctxerr.Wrap(ctx, err, "get query from id")
+	}
+	if originalQuery.TeamID != nil {
+		setAuthCheckedOnPreAuthErr(ctx)
+		return nil, ctxerr.New(ctx, "cannot create a team schedule from a team query")
+	}
+	originalQuery.Name = nameForCopiedQuery(originalQuery.Name)
+	originalQuery.TeamID = &teamID
+	newQuery, err := svc.NewQuery(ctx, fleet.ScheduledQueryToQueryPayloadForNewQuery(originalQuery, scheduledQuery))
 	if err != nil {
 		return nil, err
 	}
-	q.PackID = gp.ID
-
-	return svc.unauthorizedScheduleQuery(ctx, q)
+	return fleet.ScheduledQueryFromQuery(newQuery), nil
 }
 
 /////////////////////////////////////////////////////////////////////////////////
-// Modify
+// Modify team scheduled query.
 /////////////////////////////////////////////////////////////////////////////////
 
 type modifyTeamScheduleRequest struct {
@@ -131,37 +145,33 @@ type modifyTeamScheduleResponse struct {
 	Err       error                 `json:"error,omitempty"`
 }
 
-func (r modifyTeamScheduleResponse) error() error { return r.Err }
+func (r modifyTeamScheduleResponse) Error() error { return r.Err }
 
-func modifyTeamScheduleEndpoint(ctx context.Context, request interface{}, svc fleet.Service) (errorer, error) {
+func modifyTeamScheduleEndpoint(ctx context.Context, request interface{}, svc fleet.Service) (fleet.Errorer, error) {
 	req := request.(*modifyTeamScheduleRequest)
-	resp, err := svc.ModifyTeamScheduledQueries(ctx, req.TeamID, req.ScheduledQueryID, req.ScheduledQueryPayload)
-	if err != nil {
+	if _, err := svc.ModifyTeamScheduledQueries(ctx, req.TeamID, req.ScheduledQueryID, req.ScheduledQueryPayload); err != nil {
 		return modifyTeamScheduleResponse{Err: err}, nil
 	}
-	_ = resp
 	return modifyTeamScheduleResponse{}, nil
 }
 
-func (svc Service) ModifyTeamScheduledQueries(ctx context.Context, teamID uint, scheduledQueryID uint, query fleet.ScheduledQueryPayload) (*fleet.ScheduledQuery, error) {
-	if err := svc.authz.Authorize(ctx, &fleet.Pack{
-		Type: ptr.String(fmt.Sprintf("team-%d", teamID)),
-	}, fleet.ActionWrite); err != nil {
-		return nil, err
-	}
-
-	gp, err := svc.ds.EnsureTeamPack(ctx, teamID)
+// TODO(lucas): Document new behavior.
+// teamID is not used because of mismatch between old internal representation and API.
+func (svc Service) ModifyTeamScheduledQueries(
+	ctx context.Context,
+	teamID uint,
+	scheduledQueryID uint,
+	scheduledQueryPayload fleet.ScheduledQueryPayload,
+) (*fleet.ScheduledQuery, error) {
+	query, err := svc.ModifyQuery(ctx, scheduledQueryID, fleet.ScheduledQueryPayloadToQueryPayloadForModifyQuery(scheduledQueryPayload))
 	if err != nil {
 		return nil, err
 	}
-
-	query.PackID = ptr.Uint(gp.ID)
-
-	return svc.unauthorizedModifyScheduledQuery(ctx, scheduledQueryID, query)
+	return fleet.ScheduledQueryFromQuery(query), nil
 }
 
 /////////////////////////////////////////////////////////////////////////////////
-// Delete
+// Delete a scheduled query from a team.
 /////////////////////////////////////////////////////////////////////////////////
 
 type deleteTeamScheduleRequest struct {
@@ -174,9 +184,9 @@ type deleteTeamScheduleResponse struct {
 	Err       error                 `json:"error,omitempty"`
 }
 
-func (r deleteTeamScheduleResponse) error() error { return r.Err }
+func (r deleteTeamScheduleResponse) Error() error { return r.Err }
 
-func deleteTeamScheduleEndpoint(ctx context.Context, request interface{}, svc fleet.Service) (errorer, error) {
+func deleteTeamScheduleEndpoint(ctx context.Context, request interface{}, svc fleet.Service) (fleet.Errorer, error) {
 	req := request.(*deleteTeamScheduleRequest)
 	err := svc.DeleteTeamScheduledQueries(ctx, req.TeamID, req.ScheduledQueryID)
 	if err != nil {
@@ -185,11 +195,8 @@ func deleteTeamScheduleEndpoint(ctx context.Context, request interface{}, svc fl
 	return deleteTeamScheduleResponse{}, nil
 }
 
+// TODO(lucas): Document new behavior.
+// teamID is not used because of mismatch between old internal representation and API.
 func (svc Service) DeleteTeamScheduledQueries(ctx context.Context, teamID uint, scheduledQueryID uint) error {
-	if err := svc.authz.Authorize(ctx, &fleet.Pack{
-		Type: ptr.String(fmt.Sprintf("team-%d", teamID)),
-	}, fleet.ActionWrite); err != nil {
-		return err
-	}
-	return svc.ds.DeleteScheduledQuery(ctx, scheduledQueryID)
+	return svc.DeleteQueryByID(ctx, scheduledQueryID)
 }

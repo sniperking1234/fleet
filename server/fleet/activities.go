@@ -5,7 +5,48 @@ import (
 	"encoding/json"
 )
 
-//go:generate go run gen_activity_doc.go ../../docs/Using-Fleet/Audit-Activities.md
+//go:generate go run gen_activity_doc.go "../../docs/Contributing/Audit-logs.md"
+
+type ContextKey string
+
+// ActivityWebhookContextKey is the context key to indicate that the activity webhook has been processed before saving the activity.
+const ActivityWebhookContextKey = ContextKey("ActivityWebhook")
+
+type Activity struct {
+	CreateTimestamp
+
+	// ID is the activity id in the activities table, it is omitted for upcoming
+	// activities as those are "virtual activities" generated from entries in
+	// queues (e.g. pending host_script_results).
+	ID uint `json:"id,omitempty" db:"id"`
+
+	// UUID is the activity UUID for the upcoming activities, as identified in
+	// the relevant queue (e.g. pending host_script_results). It is omitted for
+	// past activities as those are "real activities" with an activity id.
+	UUID string `json:"uuid,omitempty" db:"uuid"`
+
+	ActorFullName  *string          `json:"actor_full_name,omitempty" db:"name"`
+	ActorID        *uint            `json:"actor_id,omitempty" db:"user_id"`
+	ActorGravatar  *string          `json:"actor_gravatar,omitempty" db:"gravatar_url"`
+	ActorEmail     *string          `json:"actor_email,omitempty" db:"user_email"`
+	Type           string           `json:"type" db:"activity_type"`
+	Details        *json.RawMessage `json:"details" db:"details"`
+	Streamed       *bool            `json:"-" db:"streamed"`
+	FleetInitiated bool             `json:"fleet_initiated" db:"fleet_initiated"`
+}
+
+// AuthzType implement AuthzTyper to be able to verify access to activities
+func (*Activity) AuthzType() string {
+	return "activity"
+}
+
+// UpcomingActivity is the augmented activity type used to return the list of
+// upcoming (pending) activities for a host.
+type UpcomingActivity struct {
+	Activity
+
+	Cancellable bool `json:"cancellable" db:"cancellable"`
+}
 
 // ActivityDetailsList is used to generate documentation.
 var ActivityDetailsList = []ActivityDetails{
@@ -27,6 +68,7 @@ var ActivityDetailsList = []ActivityDetails{
 	ActivityTypeCreatedTeam{},
 	ActivityTypeDeletedTeam{},
 	ActivityTypeAppliedSpecTeam{},
+	ActivityTypeTransferredHostsToTeam{},
 
 	ActivityTypeEditedAgentOptions{},
 
@@ -44,10 +86,14 @@ var ActivityDetailsList = []ActivityDetails{
 	ActivityTypeChangedUserTeamRole{},
 	ActivityTypeDeletedUserTeamRole{},
 
+	ActivityTypeFleetEnrolled{},
 	ActivityTypeMDMEnrolled{},
 	ActivityTypeMDMUnenrolled{},
 
 	ActivityTypeEditedMacOSMinVersion{},
+	ActivityTypeEditedIOSMinVersion{},
+	ActivityTypeEditedIPadOSMinVersion{},
+	ActivityTypeEditedWindowsUpdates{},
 
 	ActivityTypeReadHostDiskEncryptionKey{},
 
@@ -61,11 +107,58 @@ var ActivityDetailsList = []ActivityDetails{
 	ActivityTypeEnabledMacosDiskEncryption{},
 	ActivityTypeDisabledMacosDiskEncryption{},
 
+	ActivityTypeEnabledGitOpsMode{},
+	ActivityTypeDisabledGitOpsMode{},
+
 	ActivityTypeAddedBootstrapPackage{},
 	ActivityTypeDeletedBootstrapPackage{},
 
 	ActivityTypeEnabledMacosSetupEndUserAuth{},
 	ActivityTypeDisabledMacosSetupEndUserAuth{},
+
+	ActivityTypeEnabledWindowsMDM{},
+	ActivityTypeDisabledWindowsMDM{},
+	ActivityTypeEnabledWindowsMDMMigration{},
+	ActivityTypeDisabledWindowsMDMMigration{},
+
+	ActivityTypeRanScript{},
+	ActivityTypeAddedScript{},
+	ActivityTypeDeletedScript{},
+	ActivityTypeEditedScript{},
+
+	ActivityTypeCreatedWindowsProfile{},
+	ActivityTypeDeletedWindowsProfile{},
+	ActivityTypeEditedWindowsProfile{},
+
+	ActivityTypeLockedHost{},
+	ActivityTypeUnlockedHost{},
+	ActivityTypeWipedHost{},
+
+	ActivityTypeCreatedDeclarationProfile{},
+	ActivityTypeDeletedDeclarationProfile{},
+	ActivityTypeEditedDeclarationProfile{},
+
+	ActivityTypeResentConfigurationProfile{},
+
+	ActivityTypeInstalledSoftware{},
+	ActivityTypeUninstalledSoftware{},
+	ActivityTypeAddedSoftware{},
+	ActivityTypeEditedSoftware{},
+	ActivityTypeDeletedSoftware{},
+	ActivityEnabledVPP{},
+	ActivityDisabledVPP{},
+	ActivityAddedAppStoreApp{},
+	ActivityDeletedAppStoreApp{},
+	ActivityInstalledAppStoreApp{},
+	ActivityEditedAppStoreApp{},
+
+	ActivityAddedNDESSCEPProxy{},
+	ActivityDeletedNDESSCEPProxy{},
+	ActivityEditedNDESSCEPProxy{},
+
+	ActivityTypeEnabledActivityAutomations{},
+	ActivityTypeEditedActivityAutomations{},
+	ActivityTypeDisabledActivityAutomations{},
 }
 
 type ActivityDetails interface {
@@ -73,6 +166,64 @@ type ActivityDetails interface {
 	ActivityName() string
 	// Documentation is used by "go generate" to generate markdown docs.
 	Documentation() (activity string, details string, detailsExample string)
+}
+
+// ActivityHosts is the optional additional interface that can be implemented
+// by activities that are related to hosts.
+type ActivityHosts interface {
+	ActivityDetails
+	HostIDs() []uint
+}
+
+// AutomatableActivity is the optional additional interface that can be implemented
+// by activities that are sometimes the result of automation ("Fleet did X"), starting with
+// install/script run policy automations
+type AutomatableActivity interface {
+	ActivityDetails
+	WasFromAutomation() bool
+}
+
+type ActivityTypeEnabledActivityAutomations struct {
+	WebhookUrl string `json:"webhook_url"`
+}
+
+func (a ActivityTypeEnabledActivityAutomations) ActivityName() string {
+	return "enabled_activity_automations"
+}
+
+func (a ActivityTypeEnabledActivityAutomations) Documentation() (activity string, details string, detailsExample string) {
+	return `Generated when activity automations are enabled`,
+		`This activity contains the following field:
+- "webhook_url": the URL to broadcast activities to.`, `{
+	"webhook_url": "https://example.com/notify"
+}`
+}
+
+type ActivityTypeEditedActivityAutomations struct {
+	WebhookUrl string `json:"webhook_url"`
+}
+
+func (a ActivityTypeEditedActivityAutomations) ActivityName() string {
+	return "edited_activity_automations"
+}
+
+func (a ActivityTypeEditedActivityAutomations) Documentation() (activity string, details string, detailsExample string) {
+	return `Generated when activity automations are edited while enabled`,
+		`This activity contains the following field:
+- "webhook_url": the URL to broadcast activities to, post-edit.`, `{
+	"webhook_url": "https://example.com/notify"
+}`
+}
+
+type ActivityTypeDisabledActivityAutomations struct{}
+
+func (a ActivityTypeDisabledActivityAutomations) ActivityName() string {
+	return "disabled_activity_automations"
+}
+
+func (a ActivityTypeDisabledActivityAutomations) Documentation() (activity string, details string, detailsExample string) {
+	return `Generated when activity automations are disabled`,
+		`This activity does not contain any detail fields.`, ""
 }
 
 type ActivityTypeCreatedPack struct {
@@ -346,7 +497,7 @@ func (a ActivityTypeCreatedTeam) Documentation() (activity string, details strin
 - "team_id": unique ID of the created team.
 - "team_name": the name of the created team.`, `{
 	"team_id": 123,
-	"team_name": "foo"
+	"team_name": "Workstations"
 }`
 }
 
@@ -365,7 +516,7 @@ func (a ActivityTypeDeletedTeam) Documentation() (activity string, details strin
 - "team_id": unique ID of the deleted team.
 - "team_name": the name of the deleted team.`, `{
 	"team_id": 123,
-	"team_name": "foo"
+	"team_name": "Workstations"
 }`
 }
 
@@ -396,6 +547,31 @@ func (a ActivityTypeAppliedSpecTeam) Documentation() (activity string, details s
 }`
 }
 
+type ActivityTypeTransferredHostsToTeam struct {
+	TeamID           *uint    `json:"team_id"`
+	TeamName         *string  `json:"team_name"`
+	HostIDs          []uint   `json:"host_ids"`
+	HostDisplayNames []string `json:"host_display_names"`
+}
+
+func (a ActivityTypeTransferredHostsToTeam) ActivityName() string {
+	return "transferred_hosts"
+}
+
+func (a ActivityTypeTransferredHostsToTeam) Documentation() (activity, details, detailsExample string) {
+	return `Generated when a user transfers a host (or multiple hosts) to a team (or no team).`,
+		`This activity contains the following fields:
+- "team_id": The ID of the team that the hosts were transferred to, ` + "`null`" + ` if transferred to no team.
+- "team_name": The name of the team that the hosts were transferred to, ` + "`null`" + ` if transferred to no team.
+- "host_ids": The list of identifiers of the hosts that were transferred.
+- "host_display_names": The list of display names of the hosts that were transferred (in the same order as the "host_ids").`, `{
+  "team_id": 123,
+  "team_name": "Workstations",
+  "host_ids": [1, 2, 3],
+  "host_display_names": ["alice-macbook-air", "bob-macbook-pro", "linux-server"]
+}`
+}
+
 type ActivityTypeEditedAgentOptions struct {
 	Global   bool    `json:"global"`
 	TeamID   *uint   `json:"team_id"`
@@ -410,18 +586,19 @@ func (a ActivityTypeEditedAgentOptions) Documentation() (activity string, detail
 	return `Generated when agent options are edited (either globally or for a team).`,
 		`This activity contains the following fields:
 - "global": "true" if the user updated the global agent options, "false" if the agent options of a team were updated.
-- "team_id": unique ID of the team for which the agent options were updated (null if global is true).
-- "team_name": the name of the team for which the agent options were updated (null if global is true).`, `{
+- "team_id": unique ID of the team for which the agent options were updated (` + "`null`" + ` if global is true).
+- "team_name": the name of the team for which the agent options were updated (` + "`null`" + ` if global is true).`, `{
 	"team_id": 123,
-	"team_name": "foo",
+	"team_name": "Workstations",
 	"global": false
 }`
 }
 
 type ActivityTypeLiveQuery struct {
-	TargetsCount uint    `json:"targets_count"`
-	QuerySQL     string  `json:"query_sql"`
-	QueryName    *string `json:"query_name,omitempty"`
+	TargetsCount uint             `json:"targets_count"`
+	QuerySQL     string           `json:"query_sql"`
+	QueryName    *string          `json:"query_name,omitempty"`
+	Stats        *AggregatedStats `json:"stats,omitempty"`
 }
 
 func (a ActivityTypeLiveQuery) ActivityName() string {
@@ -449,23 +626,6 @@ func (a ActivityTypeUserAddedBySSO) ActivityName() string {
 func (a ActivityTypeUserAddedBySSO) Documentation() (activity string, details string, detailsExample string) {
 	return `Generated when new users are added via SSO JIT provisioning`,
 		`This activity does not contain any detail fields.`, ""
-}
-
-type Activity struct {
-	CreateTimestamp
-	ID            uint             `json:"id" db:"id"`
-	ActorFullName *string          `json:"actor_full_name,omitempty" db:"name"`
-	ActorID       *uint            `json:"actor_id,omitempty" db:"user_id"`
-	ActorGravatar *string          `json:"actor_gravatar,omitempty" db:"gravatar_url"`
-	ActorEmail    *string          `json:"actor_email,omitempty" db:"email"`
-	Type          string           `json:"type" db:"activity_type"`
-	Details       *json.RawMessage `json:"details" db:"details"`
-	Streamed      *bool            `json:"-" db:"streamed"`
-}
-
-// AuthzType implement AuthzTyper to be able to verify access to activities
-func (*Activity) AuthzType() string {
-	return "activity"
 }
 
 type ActivityTypeUserLoggedIn struct {
@@ -659,10 +819,30 @@ func (a ActivityTypeDeletedUserTeamRole) Documentation() (activity string, detai
 }`
 }
 
+type ActivityTypeFleetEnrolled struct {
+	HostSerial      string `json:"host_serial"`
+	HostDisplayName string `json:"host_display_name"`
+}
+
+func (a ActivityTypeFleetEnrolled) ActivityName() string {
+	return "fleet_enrolled"
+}
+
+func (a ActivityTypeFleetEnrolled) Documentation() (activity string, details string, detailsExample string) {
+	return `Generated when a host is enrolled to Fleet (Fleet's agent fleetd is installed).`,
+		`This activity contains the following fields:
+- "host_serial": Serial number of the host.
+- "host_display_name": Display name of the host.`, `{
+  "host_serial": "B04FL3ALPT21",
+  "host_display_name": "WIN-DESKTOP-JGS78KJ7C"
+}`
+}
+
 type ActivityTypeMDMEnrolled struct {
 	HostSerial       string `json:"host_serial"`
 	HostDisplayName  string `json:"host_display_name"`
 	InstalledFromDEP bool   `json:"installed_from_dep"`
+	MDMPlatform      string `json:"mdm_platform"`
 }
 
 func (a ActivityTypeMDMEnrolled) ActivityName() string {
@@ -672,12 +852,14 @@ func (a ActivityTypeMDMEnrolled) ActivityName() string {
 func (a ActivityTypeMDMEnrolled) Documentation() (activity string, details string, detailsExample string) {
 	return `Generated when a host is enrolled in Fleet's MDM.`,
 		`This activity contains the following fields:
-- "host_serial": Serial number of the host.
+- "host_serial": Serial number of the host (Apple enrollments only, always empty for Microsoft).
 - "host_display_name": Display name of the host.
-- "installed_from_dep": Whether the host was enrolled via DEP.`, `{
+- "installed_from_dep": Whether the host was enrolled via DEP (Apple enrollments only, always false for Microsoft).
+- "mdm_platform": Used to distinguish between Apple and Microsoft enrollments. Can be "apple", "microsoft" or not present. If missing, this value is treated as "apple" for backwards compatibility.`, `{
   "host_serial": "C08VQ2AXHT96",
   "host_display_name": "MacBookPro16,1 (C08VQ2AXHT96)",
-  "installed_from_dep": true
+  "installed_from_dep": true,
+  "mdm_platform": "apple"
 }`
 }
 
@@ -717,13 +899,88 @@ func (a ActivityTypeEditedMacOSMinVersion) ActivityName() string {
 func (a ActivityTypeEditedMacOSMinVersion) Documentation() (activity string, details string, detailsExample string) {
 	return `Generated when the minimum required macOS version or deadline is modified.`,
 		`This activity contains the following fields:
-- "team_id": The ID of the team that the minimum macOS version applies to, null if it applies to devices that are not in a team.
-- "team_name": The name of the team that the minimum macOS version applies to, null if it applies to devices that are not in a team.
+- "team_id": The ID of the team that the minimum macOS version applies to, ` + "`null`" + ` if it applies to devices that are not in a team.
+- "team_name": The name of the team that the minimum macOS version applies to, ` + "`null`" + ` if it applies to devices that are not in a team.
 - "minimum_version": The minimum macOS version required, empty if the requirement was removed.
 - "deadline": The deadline by which the minimum version requirement must be applied, empty if the requirement was removed.`, `{
   "team_id": 3,
   "team_name": "Workstations",
   "minimum_version": "13.0.1",
+  "deadline": "2023-06-01"
+}`
+}
+
+type ActivityTypeEditedWindowsUpdates struct {
+	TeamID          *uint   `json:"team_id"`
+	TeamName        *string `json:"team_name"`
+	DeadlineDays    *int    `json:"deadline_days"`
+	GracePeriodDays *int    `json:"grace_period_days"`
+}
+
+func (a ActivityTypeEditedWindowsUpdates) ActivityName() string {
+	return "edited_windows_updates"
+}
+
+func (a ActivityTypeEditedWindowsUpdates) Documentation() (activity string, details string, detailsExample string) {
+	return `Generated when the Windows OS updates deadline or grace period is modified.`,
+		`This activity contains the following fields:
+- "team_id": The ID of the team that the Windows OS updates settings applies to, ` + "`null`" + ` if it applies to devices that are not in a team.
+- "team_name": The name of the team that the Windows OS updates settings applies to, ` + "`null`" + ` if it applies to devices that are not in a team.
+- "deadline_days": The number of days before updates are installed, ` + "`null`" + ` if the requirement was removed.
+- "grace_period_days": The number of days after the deadline before the host is forced to restart, ` + "`null`" + ` if the requirement was removed.`, `{
+  "team_id": 3,
+  "team_name": "Workstations",
+  "deadline_days": 5,
+  "grace_period_days": 2
+}`
+}
+
+type ActivityTypeEditedIOSMinVersion struct {
+	TeamID         *uint   `json:"team_id"`
+	TeamName       *string `json:"team_name"`
+	MinimumVersion string  `json:"minimum_version"`
+	Deadline       string  `json:"deadline"`
+}
+
+func (a ActivityTypeEditedIOSMinVersion) ActivityName() string {
+	return "edited_ios_min_version"
+}
+
+func (a ActivityTypeEditedIOSMinVersion) Documentation() (activity string, details string, detailsExample string) {
+	return `Generated when the minimum required iOS version or deadline is modified.`,
+		`This activity contains the following fields:
+- "team_id": The ID of the team that the minimum iOS version applies to, ` + "`null`" + ` if it applies to devices that are not in a team.
+- "team_name": The name of the team that the minimum iOS version applies to, ` + "`null`" + ` if it applies to devices that are not in a team.
+- "minimum_version": The minimum iOS version required, empty if the requirement was removed.
+- "deadline": The deadline by which the minimum version requirement must be applied, empty if the requirement was removed.`, `{
+  "team_id": 3,
+  "team_name": "iPhones",
+  "minimum_version": "17.5.1",
+  "deadline": "2023-06-01"
+}`
+}
+
+type ActivityTypeEditedIPadOSMinVersion struct {
+	TeamID         *uint   `json:"team_id"`
+	TeamName       *string `json:"team_name"`
+	MinimumVersion string  `json:"minimum_version"`
+	Deadline       string  `json:"deadline"`
+}
+
+func (a ActivityTypeEditedIPadOSMinVersion) ActivityName() string {
+	return "edited_ipados_min_version"
+}
+
+func (a ActivityTypeEditedIPadOSMinVersion) Documentation() (activity string, details string, detailsExample string) {
+	return `Generated when the minimum required iPadOS version or deadline is modified.`,
+		`This activity contains the following fields:
+- "team_id": The ID of the team that the minimum iPadOS version applies to, ` + "`null`" + ` if it applies to devices that are not in a team.
+- "team_name": The name of the team that the minimum iPadOS version applies to, ` + "`null`" + ` if it applies to devices that are not in a team.
+- "minimum_version": The minimum iPadOS version required, empty if the requirement was removed.
+- "deadline": The deadline by which the minimum version requirement must be applied, empty if the requirement was removed.`, `{
+  "team_id": 3,
+  "team_name": "iPads",
+  "minimum_version": "17.5.1",
   "deadline": "2023-06-01"
 }`
 }
@@ -743,7 +1000,7 @@ func (a ActivityTypeReadHostDiskEncryptionKey) Documentation() (activity string,
 - "host_id": ID of the host.
 - "host_display_name": Display name of the host.`, `{
   "host_id": 1,
-  "host_display_name": "Anna's MacBook Pro",
+  "host_display_name": "Anna's MacBook Pro"
 }`
 }
 
@@ -763,8 +1020,8 @@ func (a ActivityTypeCreatedMacosProfile) Documentation() (activity, details, det
 		`This activity contains the following fields:
 - "profile_name": Name of the profile.
 - "profile_identifier": Identifier of the profile.
-- "team_id": The ID of the team that the profile applies to, null if it applies to devices that are not in a team.
-- "team_name": The name of the team that the profile applies to, null if it applies to devices that are not in a team.`, `{
+- "team_id": The ID of the team that the profile applies to, ` + "`null`" + ` if it applies to devices that are not in a team.
+- "team_name": The name of the team that the profile applies to, ` + "`null`" + ` if it applies to devices that are not in a team.`, `{
   "profile_name": "Custom settings 1",
   "profile_identifier": "com.my.profile",
   "team_id": 123,
@@ -788,8 +1045,8 @@ func (a ActivityTypeDeletedMacosProfile) Documentation() (activity, details, det
 		`This activity contains the following fields:
 - "profile_name": Name of the deleted profile.
 - "profile_identifier": Identifier of deleted the profile.
-- "team_id": The ID of the team that the profile applied to, null if it applied to devices that are not in a team.
-- "team_name": The name of the team that the profile applied to, null if it applied to devices that are not in a team.`, `{
+- "team_id": The ID of the team that the profile applied to, ` + "`null`" + ` if it applied to devices that are not in a team.
+- "team_name": The name of the team that the profile applied to, ` + "`null`" + ` if it applied to devices that are not in a team.`, `{
   "profile_name": "Custom settings 1",
   "profile_identifier": "com.my.profile",
   "team_id": 123,
@@ -809,8 +1066,8 @@ func (a ActivityTypeEditedMacosProfile) ActivityName() string {
 func (a ActivityTypeEditedMacosProfile) Documentation() (activity, details, detailsExample string) {
 	return `Generated when a user edits the macOS profiles of a team (or no team) via the fleetctl CLI.`,
 		`This activity contains the following fields:
-- "team_id": The ID of the team that the profiles apply to, null if they apply to devices that are not in a team.
-- "team_name": The name of the team that the profiles apply to, null if they apply to devices that are not in a team.`, `{
+- "team_id": The ID of the team that the profiles apply to, ` + "`null`" + ` if they apply to devices that are not in a team.
+- "team_name": The name of the team that the profiles apply to, ` + "`null`" + ` if they apply to devices that are not in a team.`, `{
   "team_id": 123,
   "team_name": "Workstations"
 }`
@@ -830,8 +1087,8 @@ func (a ActivityTypeChangedMacosSetupAssistant) Documentation() (activity, detai
 	return `Generated when a user sets the macOS setup assistant for a team (or no team).`,
 		`This activity contains the following fields:
 - "name": Name of the macOS setup assistant file.
-- "team_id": The ID of the team that the setup assistant applies to, null if it applies to devices that are not in a team.
-- "team_name": The name of the team that the setup assistant applies to, null if it applies to devices that are not in a team.`, `{
+- "team_id": The ID of the team that the setup assistant applies to, ` + "`null`" + ` if it applies to devices that are not in a team.
+- "team_name": The name of the team that the setup assistant applies to, ` + "`null`" + ` if it applies to devices that are not in a team.`, `{
   "name": "dep_profile.json",
   "team_id": 123,
   "team_name": "Workstations"
@@ -852,8 +1109,8 @@ func (a ActivityTypeDeletedMacosSetupAssistant) Documentation() (activity, detai
 	return `Generated when a user deletes the macOS setup assistant for a team (or no team).`,
 		`This activity contains the following fields:
 - "name": Name of the deleted macOS setup assistant file.
-- "team_id": The ID of the team that the setup assistant applied to, null if it applied to devices that are not in a team.
-- "team_name": The name of the team that the setup assistant applied to, null if it applied to devices that are not in a team.`, `{
+- "team_id": The ID of the team that the setup assistant applied to, ` + "`null`" + ` if it applied to devices that are not in a team.
+- "team_name": The name of the team that the setup assistant applied to, ` + "`null`" + ` if it applied to devices that are not in a team.`, `{
   "name": "dep_profile.json",
   "team_id": 123,
   "team_name": "Workstations"
@@ -872,8 +1129,8 @@ func (a ActivityTypeEnabledMacosDiskEncryption) ActivityName() string {
 func (a ActivityTypeEnabledMacosDiskEncryption) Documentation() (activity, details, detailsExample string) {
 	return `Generated when a user turns on macOS disk encryption for a team (or no team).`,
 		`This activity contains the following fields:
-- "team_id": The ID of the team that disk encryption applies to, null if it applies to devices that are not in a team.
-- "team_name": The name of the team that disk encryption applies to, null if it applies to devices that are not in a team.`, `{
+- "team_id": The ID of the team that disk encryption applies to, ` + "`null`" + ` if it applies to devices that are not in a team.
+- "team_name": The name of the team that disk encryption applies to, ` + "`null`" + ` if it applies to devices that are not in a team.`, `{
   "team_id": 123,
   "team_name": "Workstations"
 }`
@@ -891,11 +1148,31 @@ func (a ActivityTypeDisabledMacosDiskEncryption) ActivityName() string {
 func (a ActivityTypeDisabledMacosDiskEncryption) Documentation() (activity, details, detailsExample string) {
 	return `Generated when a user turns off macOS disk encryption for a team (or no team).`,
 		`This activity contains the following fields:
-- "team_id": The ID of the team that disk encryption applies to, null if it applies to devices that are not in a team.
-- "team_name": The name of the team that disk encryption applies to, null if it applies to devices that are not in a team.`, `{
+- "team_id": The ID of the team that disk encryption applies to, ` + "`null`" + ` if it applies to devices that are not in a team.
+- "team_name": The name of the team that disk encryption applies to, ` + "`null`" + ` if it applies to devices that are not in a team.`, `{
   "team_id": 123,
   "team_name": "Workstations"
 }`
+}
+
+type ActivityTypeEnabledGitOpsMode struct{}
+
+func (a ActivityTypeEnabledGitOpsMode) ActivityName() string {
+	return "enabled_gitops_mode"
+}
+
+func (a ActivityTypeEnabledGitOpsMode) Documentation() (activity, details, detailsExample string) {
+	return `Generated when a user enables GitOps mode.`, `This activity does not contain any detail fields.`, ``
+}
+
+type ActivityTypeDisabledGitOpsMode struct{}
+
+func (a ActivityTypeDisabledGitOpsMode) ActivityName() string {
+	return "disabled_gitops_mode"
+}
+
+func (a ActivityTypeDisabledGitOpsMode) Documentation() (activity, details, detailsExample string) {
+	return `Generated when a user disables GitOps mode.`, `This activity does not contain any detail fields.`, ``
 }
 
 type ActivityTypeAddedBootstrapPackage struct {
@@ -912,8 +1189,8 @@ func (a ActivityTypeAddedBootstrapPackage) Documentation() (activity, details, d
 	return `Generated when a user adds a new bootstrap package to a team (or no team).`,
 		`This activity contains the following fields:
 - "package_name": Name of the package.
-- "team_id": The ID of the team that the package applies to, null if it applies to devices that are not in a team.
-- "team_name": The name of the team that the package applies to, null if it applies to devices that are not in a team.`, `{
+- "team_id": The ID of the team that the package applies to, ` + "`null`" + ` if it applies to devices that are not in a team.
+- "team_name": The name of the team that the package applies to, ` + "`null`" + ` if it applies to devices that are not in a team.`, `{
   "bootstrap_package_name": "bootstrap-package.pkg",
   "team_id": 123,
   "team_name": "Workstations"
@@ -934,8 +1211,8 @@ func (a ActivityTypeDeletedBootstrapPackage) Documentation() (activity, details,
 	return `Generated when a user deletes a bootstrap package from a team (or no team).`,
 		`This activity contains the following fields:
 - "package_name": Name of the package.
-- "team_id": The ID of the team that the package applies to, null if it applies to devices that are not in a team.
-- "team_name": The name of the team that the package applies to, null if it applies to devices that are not in a team.`, `{
+- "team_id": The ID of the team that the package applies to, ` + "`null`" + ` if it applies to devices that are not in a team.
+- "team_name": The name of the team that the package applies to, ` + "`null`" + ` if it applies to devices that are not in a team.`, `{
   "package_name": "bootstrap-package.pkg",
   "team_id": 123,
   "team_name": "Workstations"
@@ -954,8 +1231,8 @@ func (a ActivityTypeEnabledMacosSetupEndUserAuth) ActivityName() string {
 func (a ActivityTypeEnabledMacosSetupEndUserAuth) Documentation() (activity, details, detailsExample string) {
 	return `Generated when a user turns on end user authentication for macOS hosts that automatically enroll to a team (or no team).`,
 		`This activity contains the following fields:
-- "team_id": The ID of the team that end user authentication applies to, null if it applies to devices that are not in a team.
-- "team_name": The name of the team that end user authentication applies to, null if it applies to devices that are not in a team.`, `{
+- "team_id": The ID of the team that end user authentication applies to, ` + "`null`" + ` if it applies to devices that are not in a team.
+- "team_name": The name of the team that end user authentication applies to, ` + "`null`" + ` if it applies to devices that are not in a team.`, `{
   "team_id": 123,
   "team_name": "Workstations"
 }`
@@ -973,17 +1250,630 @@ func (a ActivityTypeDisabledMacosSetupEndUserAuth) ActivityName() string {
 func (a ActivityTypeDisabledMacosSetupEndUserAuth) Documentation() (activity, details, detailsExample string) {
 	return `Generated when a user turns off end user authentication for macOS hosts that automatically enroll to a team (or no team).`,
 		`This activity contains the following fields:
-- "team_id": The ID of the team that end user authentication applies to, null if it applies to devices that are not in a team.
-- "team_name": The name of the team that end user authentication applies to, null if it applies to devices that are not in a team.`, `{
+- "team_id": The ID of the team that end user authentication applies to, ` + "`null`" + ` if it applies to devices that are not in a team.
+- "team_name": The name of the team that end user authentication applies to, ` + "`null`" + ` if it applies to devices that are not in a team.`, `{
   "team_id": 123,
   "team_name": "Workstations"
 }`
 }
 
+type ActivityTypeEnabledWindowsMDM struct{}
+
+func (a ActivityTypeEnabledWindowsMDM) ActivityName() string {
+	return "enabled_windows_mdm"
+}
+
+func (a ActivityTypeEnabledWindowsMDM) Documentation() (activity, details, detailsExample string) {
+	return `Generated when a user turns on MDM features for all Windows hosts (servers excluded).`,
+		`This activity does not contain any detail fields.`, ``
+}
+
+type ActivityTypeDisabledWindowsMDM struct{}
+
+func (a ActivityTypeDisabledWindowsMDM) ActivityName() string {
+	return "disabled_windows_mdm"
+}
+
+func (a ActivityTypeDisabledWindowsMDM) Documentation() (activity, details, detailsExample string) {
+	return `Generated when a user turns off MDM features for all Windows hosts.`,
+		`This activity does not contain any detail fields.`, ``
+}
+
+type ActivityTypeEnabledWindowsMDMMigration struct{}
+
+func (a ActivityTypeEnabledWindowsMDMMigration) ActivityName() string {
+	return "enabled_windows_mdm_migration"
+}
+
+func (a ActivityTypeEnabledWindowsMDMMigration) Documentation() (activity, details, detailsExample string) {
+	return `Generated when a user enables automatic MDM migration for Windows hosts, if Windows MDM is turned on.`,
+		`This activity does not contain any detail fields.`, ``
+}
+
+type ActivityTypeDisabledWindowsMDMMigration struct{}
+
+func (a ActivityTypeDisabledWindowsMDMMigration) ActivityName() string {
+	return "disabled_windows_mdm_migration"
+}
+
+func (a ActivityTypeDisabledWindowsMDMMigration) Documentation() (activity, details, detailsExample string) {
+	return `Generated when a user disables automatic MDM migration for Windows hosts, if Windows MDM is turned on.`,
+		`This activity does not contain any detail fields.`, ``
+}
+
+type ActivityTypeRanScript struct {
+	HostID            uint    `json:"host_id"`
+	HostDisplayName   string  `json:"host_display_name"`
+	ScriptExecutionID string  `json:"script_execution_id"`
+	ScriptName        string  `json:"script_name"`
+	Async             bool    `json:"async"`
+	PolicyID          *uint   `json:"policy_id"`
+	PolicyName        *string `json:"policy_name"`
+}
+
+func (a ActivityTypeRanScript) ActivityName() string {
+	return "ran_script"
+}
+
+func (a ActivityTypeRanScript) HostIDs() []uint {
+	return []uint{a.HostID}
+}
+
+func (a ActivityTypeRanScript) WasFromAutomation() bool {
+	return a.PolicyID != nil
+}
+
+func (a ActivityTypeRanScript) Documentation() (activity, details, detailsExample string) {
+	return `Generated when a script is sent to be run for a host.`,
+		`This activity contains the following fields:
+- "host_id": ID of the host.
+- "host_display_name": Display name of the host.
+- "script_execution_id": Execution ID of the script run.
+- "script_name": Name of the script (empty if it was an anonymous script).
+- "async": Whether the script was executed asynchronously.
+- "policy_id": ID of the policy whose failure triggered the script run. Null if no associated policy.
+- "policy_name": Name of the policy whose failure triggered the script run. Null if no associated policy.`, `{
+  "host_id": 1,
+  "host_display_name": "Anna's MacBook Pro",
+  "script_name": "set-timezones.sh",
+  "script_execution_id": "d6cffa75-b5b5-41ef-9230-15073c8a88cf",
+  "async": false,
+  "policy_id": 123,
+  "policy_name": "Ensure photon torpedoes are primed"
+}`
+}
+
+type ActivityTypeAddedScript struct {
+	ScriptName string  `json:"script_name"`
+	TeamID     *uint   `json:"team_id"`
+	TeamName   *string `json:"team_name"`
+}
+
+func (a ActivityTypeAddedScript) ActivityName() string {
+	return "added_script"
+}
+
+func (a ActivityTypeAddedScript) Documentation() (activity, details, detailsExample string) {
+	return `Generated when a script is added to a team (or no team).`,
+		`This activity contains the following fields:
+- "script_name": Name of the script.
+- "team_id": The ID of the team that the script applies to, ` + "`null`" + ` if it applies to devices that are not in a team.
+- "team_name": The name of the team that the script applies to, ` + "`null`" + ` if it applies to devices that are not in a team.`, `{
+  "script_name": "set-timezones.sh",
+  "team_id": 123,
+  "team_name": "Workstations"
+}`
+}
+
+type ActivityTypeUpdatedScript struct {
+	ScriptName string  `json:"script_name"`
+	TeamID     *uint   `json:"team_id"`
+	TeamName   *string `json:"team_name"`
+}
+
+func (a ActivityTypeUpdatedScript) ActivityName() string {
+	return "updated_script"
+}
+
+func (a ActivityTypeUpdatedScript) Documentation() (activity, details, detailsExample string) {
+	return `Generated when a script is updated.`,
+		`This activity contains the following fields:
+- "script_name": Name of the script.
+- "team_id": The ID of the team that the script applies to, ` + "`null`" + ` if it applies to devices that are not in a team.
+- "team_name": The name of the team that the script applies to, ` + "`null`" + ` if it applies to devices that are not in a team.`, `{
+  "script_name": "set-timezones.sh",
+  "team_id": 123,
+  "team_name": "Workstations"
+}`
+}
+
+type ActivityTypeDeletedScript struct {
+	ScriptName string  `json:"script_name"`
+	TeamID     *uint   `json:"team_id"`
+	TeamName   *string `json:"team_name"`
+}
+
+func (a ActivityTypeDeletedScript) ActivityName() string {
+	return "deleted_script"
+}
+
+func (a ActivityTypeDeletedScript) Documentation() (activity, details, detailsExample string) {
+	return `Generated when a script is deleted from a team (or no team).`,
+		`This activity contains the following fields:
+- "script_name": Name of the script.
+- "team_id": The ID of the team that the script applies to, ` + "`null`" + ` if it applies to devices that are not in a team.
+- "team_name": The name of the team that the script applies to, ` + "`null`" + ` if it applies to devices that are not in a team.`, `{
+  "script_name": "set-timezones.sh",
+  "team_id": 123,
+  "team_name": "Workstations"
+}`
+}
+
+type ActivityTypeEditedScript struct {
+	TeamID   *uint   `json:"team_id"`
+	TeamName *string `json:"team_name"`
+}
+
+func (a ActivityTypeEditedScript) ActivityName() string {
+	return "edited_script"
+}
+
+func (a ActivityTypeEditedScript) Documentation() (activity, details, detailsExample string) {
+	return `Generated when a user edits the scripts of a team (or no team) via the fleetctl CLI.`,
+		`This activity contains the following fields:
+- "team_id": The ID of the team that the scripts apply to, ` + "`null`" + ` if they apply to devices that are not in a team.
+- "team_name": The name of the team that the scripts apply to, ` + "`null`" + ` if they apply to devices that are not in a team.`, `{
+  "team_id": 123,
+  "team_name": "Workstations"
+}`
+}
+
+type ActivityTypeCreatedWindowsProfile struct {
+	ProfileName string  `json:"profile_name"`
+	TeamID      *uint   `json:"team_id"`
+	TeamName    *string `json:"team_name"`
+}
+
+func (a ActivityTypeCreatedWindowsProfile) ActivityName() string {
+	return "created_windows_profile"
+}
+
+func (a ActivityTypeCreatedWindowsProfile) Documentation() (activity, details, detailsExample string) {
+	return `Generated when a user adds a new Windows profile to a team (or no team).`,
+		`This activity contains the following fields:
+- "profile_name": Name of the profile.
+- "team_id": The ID of the team that the profile applies to, ` + "`null`" + ` if it applies to devices that are not in a team.
+- "team_name": The name of the team that the profile applies to, ` + "`null`" + ` if it applies to devices that are not in a team.`, `{
+  "profile_name": "Custom settings 1",
+  "team_id": 123,
+  "team_name": "Workstations"
+}`
+}
+
+type ActivityTypeDeletedWindowsProfile struct {
+	ProfileName string  `json:"profile_name"`
+	TeamID      *uint   `json:"team_id"`
+	TeamName    *string `json:"team_name"`
+}
+
+func (a ActivityTypeDeletedWindowsProfile) ActivityName() string {
+	return "deleted_windows_profile"
+}
+
+func (a ActivityTypeDeletedWindowsProfile) Documentation() (activity, details, detailsExample string) {
+	return `Generated when a user deletes a Windows profile from a team (or no team).`,
+		`This activity contains the following fields:
+- "profile_name": Name of the deleted profile.
+- "team_id": The ID of the team that the profile applied to, ` + "`null`" + ` if it applied to devices that are not in a team.
+- "team_name": The name of the team that the profile applied to, ` + "`null`" + ` if it applied to devices that are not in a team.`, `{
+  "profile_name": "Custom settings 1",
+  "team_id": 123,
+  "team_name": "Workstations"
+}`
+}
+
+type ActivityTypeEditedWindowsProfile struct {
+	TeamID   *uint   `json:"team_id"`
+	TeamName *string `json:"team_name"`
+}
+
+func (a ActivityTypeEditedWindowsProfile) ActivityName() string {
+	return "edited_windows_profile"
+}
+
+func (a ActivityTypeEditedWindowsProfile) Documentation() (activity, details, detailsExample string) {
+	return `Generated when a user edits the Windows profiles of a team (or no team) via the fleetctl CLI.`,
+		`This activity contains the following fields:
+- "team_id": The ID of the team that the profiles apply to, ` + "`null`" + ` if they apply to devices that are not in a team.
+- "team_name": The name of the team that the profiles apply to, ` + "`null`" + ` if they apply to devices that are not in a team.`, `{
+  "team_id": 123,
+  "team_name": "Workstations"
+}`
+}
+
+type ActivityTypeLockedHost struct {
+	HostID          uint   `json:"host_id"`
+	HostDisplayName string `json:"host_display_name"`
+	ViewPIN         bool   `json:"view_pin"`
+}
+
+func (a ActivityTypeLockedHost) ActivityName() string {
+	return "locked_host"
+}
+
+func (a ActivityTypeLockedHost) HostIDs() []uint {
+	return []uint{a.HostID}
+}
+
+func (a ActivityTypeLockedHost) Documentation() (activity, details, detailsExample string) {
+	return `Generated when a user sends a request to lock a host.`,
+		`This activity contains the following fields:
+- "host_id": ID of the host.
+- "host_display_name": Display name of the host.
+- "view_pin": Whether lock PIN was viewed (for Apple devices).`, `{
+  "host_id": 1,
+  "host_display_name": "Anna's MacBook Pro",
+  "view_pin": true
+}`
+}
+
+type ActivityTypeUnlockedHost struct {
+	HostID          uint   `json:"host_id"`
+	HostDisplayName string `json:"host_display_name"`
+	HostPlatform    string `json:"host_platform"`
+}
+
+func (a ActivityTypeUnlockedHost) ActivityName() string {
+	return "unlocked_host"
+}
+
+func (a ActivityTypeUnlockedHost) HostIDs() []uint {
+	return []uint{a.HostID}
+}
+
+func (a ActivityTypeUnlockedHost) Documentation() (activity, details, detailsExample string) {
+	return `Generated when a user sends a request to unlock a host.`,
+		`This activity contains the following fields:
+- "host_id": ID of the host.
+- "host_display_name": Display name of the host.
+- "host_platform": Platform of the host.`, `{
+  "host_id": 1,
+  "host_display_name": "Anna's MacBook Pro",
+  "host_platform": "darwin"
+}`
+}
+
+type ActivityTypeWipedHost struct {
+	HostID          uint   `json:"host_id"`
+	HostDisplayName string `json:"host_display_name"`
+}
+
+func (a ActivityTypeWipedHost) ActivityName() string {
+	return "wiped_host"
+}
+
+func (a ActivityTypeWipedHost) Documentation() (activity, details, detailsExample string) {
+	return `Generated when a user sends a request to wipe a host.`,
+		`This activity contains the following fields:
+- "host_id": ID of the host.
+- "host_display_name": Display name of the host.`, `{
+  "host_id": 1,
+  "host_display_name": "Anna's MacBook Pro"
+}`
+}
+
+type ActivityTypeCreatedDeclarationProfile struct {
+	ProfileName string  `json:"profile_name"`
+	Identifier  string  `json:"identifier"`
+	TeamID      *uint   `json:"team_id"`
+	TeamName    *string `json:"team_name"`
+}
+
+func (a ActivityTypeCreatedDeclarationProfile) ActivityName() string {
+	return "created_declaration_profile"
+}
+
+func (a ActivityTypeCreatedDeclarationProfile) Documentation() (activity string, details string, detailsExample string) {
+	return `Generated when a user adds a new macOS declaration to a team (or no team).`,
+		`This activity contains the following fields:
+- "profile_name": Name of the declaration.
+- "identifier": Identifier of the declaration.
+- "team_id": The ID of the team that the declaration applies to, ` + "`null`" + ` if it applies to devices that are not in a team.
+- "team_name": The name of the team that the declaration applies to, ` + "`null`" + ` if it applies to devices that are not in a team.`, `{
+  "profile_name": "Passcode requirements",
+  "profile_identifier": "com.my.declaration",
+  "team_id": 123,
+  "team_name": "Workstations"
+}`
+}
+
+type ActivityTypeDeletedDeclarationProfile struct {
+	ProfileName string  `json:"profile_name"`
+	Identifier  string  `json:"identifier"`
+	TeamID      *uint   `json:"team_id"`
+	TeamName    *string `json:"team_name"`
+}
+
+func (a ActivityTypeDeletedDeclarationProfile) ActivityName() string {
+	return "deleted_declaration_profile"
+}
+
+func (a ActivityTypeDeletedDeclarationProfile) Documentation() (activity string, details string, detailsExample string) {
+	return `Generated when a user removes a macOS declaration from a team (or no team).`,
+		`This activity contains the following fields:
+- "profile_name": Name of the declaration.
+- "identifier": Identifier of the declaration.
+- "team_id": The ID of the team that the declaration applies to, ` + "`null`" + ` if it applies to devices that are not in a team.
+- "team_name": The name of the team that the declaration applies to, ` + "`null`" + ` if it applies to devices that are not in a team.`, `{
+  "profile_name": "Passcode requirements",
+  "profile_identifier": "com.my.declaration",
+  "team_id": 123,
+  "team_name": "Workstations"
+}`
+}
+
+type ActivityTypeEditedDeclarationProfile struct {
+	TeamID   *uint   `json:"team_id"`
+	TeamName *string `json:"team_name"`
+}
+
+func (a ActivityTypeEditedDeclarationProfile) ActivityName() string {
+	return "edited_declaration_profile"
+}
+
+func (a ActivityTypeEditedDeclarationProfile) Documentation() (activity string, details string, detailsExample string) {
+	return `Generated when a user edits the macOS declarations of a team (or no team) via the fleetctl CLI.`,
+		`This activity contains the following fields:
+- "team_id": The ID of the team that the declarations apply to, ` + "`null`" + ` if they apply to devices that are not in a team.
+- "team_name": The name of the team that the declarations apply to, ` + "`null`" + ` if they apply to devices that are not in a team.`, `{
+  "team_id": 123,
+  "team_name": "Workstations"
+}`
+}
+
+type ActivityTypeResentConfigurationProfile struct {
+	HostID          *uint   `json:"host_id"`
+	HostDisplayName *string `json:"host_display_name"`
+	ProfileName     string  `json:"profile_name"`
+}
+
+func (a ActivityTypeResentConfigurationProfile) ActivityName() string {
+	return "resent_configuration_profile"
+}
+
+func (a ActivityTypeResentConfigurationProfile) Documentation() (activity string, details string, detailsExample string) {
+	return `Generated when a user resends an MDM configuration profile to a host.`,
+		`This activity contains the following fields:
+- "host_id": The ID of the host.
+- "host_display_name": The display name of the host.
+- "profile_name": The name of the configuration profile.`, `{
+  "host_id": 1,
+  "host_display_name": "Anna's MacBook Pro",
+  "profile_name": "Passcode requirements"
+}`
+}
+
+type ActivityTypeInstalledSoftware struct {
+	HostID          uint    `json:"host_id"`
+	HostDisplayName string  `json:"host_display_name"`
+	SoftwareTitle   string  `json:"software_title"`
+	SoftwarePackage string  `json:"software_package"`
+	SelfService     bool    `json:"self_service"`
+	InstallUUID     string  `json:"install_uuid"`
+	Status          string  `json:"status"`
+	PolicyID        *uint   `json:"policy_id"`
+	PolicyName      *string `json:"policy_name"`
+}
+
+func (a ActivityTypeInstalledSoftware) ActivityName() string {
+	return "installed_software"
+}
+
+func (a ActivityTypeInstalledSoftware) HostIDs() []uint {
+	return []uint{a.HostID}
+}
+
+func (a ActivityTypeInstalledSoftware) WasFromAutomation() bool {
+	return a.PolicyID != nil
+}
+
+func (a ActivityTypeInstalledSoftware) Documentation() (activity, details, detailsExample string) {
+	return `Generated when a Fleet-maintained app or custom package is installed on a host.`,
+		`This activity contains the following fields:
+- "host_id": ID of the host.
+- "host_display_name": Display name of the host.
+- "install_uuid": ID of the software installation.
+- "self_service": Whether the installation was initiated by the end user.
+- "software_title": Name of the software.
+- "software_package": Filename of the installer.
+- "status": Status of the software installation.
+- "policy_id": ID of the policy whose failure triggered the installation. Null if no associated policy.
+- "policy_name": Name of the policy whose failure triggered installation. Null if no associated policy.
+`, `{
+  "host_id": 1,
+  "host_display_name": "Anna's MacBook Pro",
+  "software_title": "Falcon.app",
+  "software_package": "FalconSensor-6.44.pkg",
+  "self_service": true,
+  "install_uuid": "d6cffa75-b5b5-41ef-9230-15073c8a88cf",
+  "status": "pending",
+  "policy_id": 1337,
+  "policy_name": "Ensure 1Password is installed and up to date"
+}`
+}
+
+type ActivityTypeUninstalledSoftware struct {
+	HostID          uint   `json:"host_id"`
+	HostDisplayName string `json:"host_display_name"`
+	SoftwareTitle   string `json:"software_title"`
+	ExecutionID     string `json:"script_execution_id"`
+	Status          string `json:"status"`
+}
+
+func (a ActivityTypeUninstalledSoftware) ActivityName() string {
+	return "uninstalled_software"
+}
+
+func (a ActivityTypeUninstalledSoftware) HostIDs() []uint {
+	return []uint{a.HostID}
+}
+
+func (a ActivityTypeUninstalledSoftware) Documentation() (activity, details, detailsExample string) {
+	return `Generated when a Fleet-maintained app or custom package is uninstalled on a host.`,
+		`This activity contains the following fields:
+- "host_id": ID of the host.
+- "host_display_name": Display name of the host.
+- "software_title": Name of the software.
+- "script_execution_id": ID of the software uninstall script.
+- "status": Status of the software uninstallation.`, `{
+  "host_id": 1,
+  "host_display_name": "Anna's MacBook Pro",
+  "software_title": "Falcon.app",
+  "script_execution_id": "ece8d99d-4313-446a-9af2-e152cd1bad1e",
+  "status": "uninstalled"
+}`
+}
+
+type ActivitySoftwareLabel struct {
+	Name string `json:"name"`
+	ID   uint   `json:"id"`
+}
+
+type ActivityTypeAddedSoftware struct {
+	SoftwareTitle    string                  `json:"software_title"`
+	SoftwarePackage  string                  `json:"software_package"`
+	TeamName         *string                 `json:"team_name"`
+	TeamID           *uint                   `json:"team_id"`
+	SelfService      bool                    `json:"self_service"`
+	SoftwareTitleID  uint                    `json:"software_title_id"`
+	LabelsIncludeAny []ActivitySoftwareLabel `json:"labels_include_any,omitempty"`
+	LabelsExcludeAny []ActivitySoftwareLabel `json:"labels_exclude_any,omitempty"`
+}
+
+func (a ActivityTypeAddedSoftware) ActivityName() string {
+	return "added_software"
+}
+
+func (a ActivityTypeAddedSoftware) Documentation() (string, string, string) {
+	return `Generated when a Fleet-maintained app or custom package is added to Fleet.`, `This activity contains the following fields:
+- "software_title": Name of the software.
+- "software_package": Filename of the installer.
+- "team_name": Name of the team to which this software was added.` + " `null` " + `if it was added to no team." +
+- "team_id": The ID of the team to which this software was added.` + " `null` " + `if it was added to no team.
+- "self_service": Whether the software is available for installation by the end user.
+- "software_title_id": ID of the added software title.
+- "labels_include_any": Target hosts that have any label in the array.
+- "labels_exclude_any": Target hosts that don't have any label in the array.`, `{
+  "software_title": "Falcon.app",
+  "software_package": "FalconSensor-6.44.pkg",
+  "team_name": "Workstations",
+  "team_id": 123,
+  "self_service": true,
+  "software_title_id": 2234,
+  "labels_include_any": [
+    {
+      "name": "Engineering",
+      "id": 12
+    },
+    {
+      "name": "Product",
+      "id": 17
+    }
+  ]
+}`
+}
+
+type ActivityTypeEditedSoftware struct {
+	SoftwareTitle    string                  `json:"software_title"`
+	SoftwarePackage  *string                 `json:"software_package"`
+	TeamName         *string                 `json:"team_name"`
+	TeamID           *uint                   `json:"team_id"`
+	SelfService      bool                    `json:"self_service"`
+	LabelsIncludeAny []ActivitySoftwareLabel `json:"labels_include_any,omitempty"`
+	LabelsExcludeAny []ActivitySoftwareLabel `json:"labels_exclude_any,omitempty"`
+	SoftwareTitleID  uint                    `json:"software_title_id"`
+}
+
+func (a ActivityTypeEditedSoftware) ActivityName() string {
+	return "edited_software"
+}
+
+func (a ActivityTypeEditedSoftware) Documentation() (string, string, string) {
+	return `Generated when a Fleet-maintained app or custom package is edited in Fleet.`, `This activity contains the following fields:
+- "software_title": Name of the software.
+- "software_package": Filename of the installer as of this update (including if unchanged).
+- "team_name": Name of the team on which this software was updated.` + " `null` " + `if it was updated on no team.
+- "team_id": The ID of the team on which this software was updated.` + " `null` " + `if it was updated on no team.
+- "self_service": Whether the software is available for installation by the end user.
+- "software_title_id": ID of the added software title.
+- "labels_include_any": Target hosts that have any label in the array.
+- "labels_exclude_any": Target hosts that don't have any label in the array.`, `{
+  "software_title": "Falcon.app",
+  "software_package": "FalconSensor-6.44.pkg",
+  "team_name": "Workstations",
+  "team_id": 123,
+  "self_service": true,
+  "software_title_id": 2234,
+  "labels_include_any": [
+    {
+      "name": "Engineering",
+      "id": 12
+    },
+    {
+      "name": "Product",
+      "id": 17
+    }
+  ]
+}`
+}
+
+type ActivityTypeDeletedSoftware struct {
+	SoftwareTitle    string                  `json:"software_title"`
+	SoftwarePackage  string                  `json:"software_package"`
+	TeamName         *string                 `json:"team_name"`
+	TeamID           *uint                   `json:"team_id"`
+	SelfService      bool                    `json:"self_service"`
+	LabelsIncludeAny []ActivitySoftwareLabel `json:"labels_include_any,omitempty"`
+	LabelsExcludeAny []ActivitySoftwareLabel `json:"labels_exclude_any,omitempty"`
+}
+
+func (a ActivityTypeDeletedSoftware) ActivityName() string {
+	return "deleted_software"
+}
+
+func (a ActivityTypeDeletedSoftware) Documentation() (string, string, string) {
+	return `Generated when a Fleet maintained app or custom package is deleted from Fleet.`, `This activity contains the following fields:
+- "software_title": Name of the software.
+- "software_package": Filename of the installer.
+- "team_name": Name of the team to which this software was added.` + " `null` " + `if it was added to no team.
+- "team_id": The ID of the team to which this software was added.` + " `null` " + `if it was added to no team.
+- "self_service": Whether the software was available for installation by the end user.
+- "labels_include_any": Target hosts that have any label in the array.
+- "labels_exclude_any": Target hosts that don't have any label in the array.`, `{
+  "software_title": "Falcon.app",
+  "software_package": "FalconSensor-6.44.pkg",
+  "team_name": "Workstations",
+  "team_id": 123,
+  "self_service": true,
+  "labels_include_any": [
+    {
+      "name": "Engineering",
+      "id": 12
+    },
+    {
+      "name": "Product",
+      "id": 17
+    }
+  ]
+}`
+}
+
 // LogRoleChangeActivities logs activities for each role change, globally and one for each change in teams.
-func LogRoleChangeActivities(ctx context.Context, ds Datastore, adminUser *User, oldGlobalRole *string, oldTeamRoles []UserTeam, user *User) error {
+func LogRoleChangeActivities(
+	ctx context.Context, svc Service, adminUser *User, oldGlobalRole *string, oldTeamRoles []UserTeam, user *User,
+) error {
 	if user.GlobalRole != nil && (oldGlobalRole == nil || *oldGlobalRole != *user.GlobalRole) {
-		if err := ds.NewActivity(
+		if err := svc.NewActivity(
 			ctx,
 			adminUser,
 			ActivityTypeChangedUserGlobalRole{
@@ -997,7 +1887,7 @@ func LogRoleChangeActivities(ctx context.Context, ds Datastore, adminUser *User,
 		}
 	}
 	if user.GlobalRole == nil && oldGlobalRole != nil {
-		if err := ds.NewActivity(
+		if err := svc.NewActivity(
 			ctx,
 			adminUser,
 			ActivityTypeDeletedUserGlobalRole{
@@ -1022,7 +1912,7 @@ func LogRoleChangeActivities(ctx context.Context, ds Datastore, adminUser *User,
 		if ok && o.Role == t.Role {
 			continue
 		}
-		if err := ds.NewActivity(
+		if err := svc.NewActivity(
 			ctx,
 			adminUser,
 			ActivityTypeChangedUserTeamRole{
@@ -1041,7 +1931,7 @@ func LogRoleChangeActivities(ctx context.Context, ds Datastore, adminUser *User,
 		if _, ok := newTeamsLookup[o.ID]; ok {
 			continue
 		}
-		if err := ds.NewActivity(
+		if err := svc.NewActivity(
 			ctx,
 			adminUser,
 			ActivityTypeDeletedUserTeamRole{
@@ -1057,4 +1947,246 @@ func LogRoleChangeActivities(ctx context.Context, ds Datastore, adminUser *User,
 		}
 	}
 	return nil
+}
+
+type ActivityEnabledVPP struct {
+	Location string `json:"location"`
+}
+
+func (a ActivityEnabledVPP) ActivityName() string {
+	return "enabled_vpp"
+}
+
+func (a ActivityEnabledVPP) Documentation() (activity string, details string, detailsExample string) {
+	return "Generated when VPP features are enabled in Fleet.", `This activity contains the following fields:
+- "location": Location associated with the VPP content token for the enabled VPP features.`, `{
+  "location": "Acme Inc."
+}`
+}
+
+type ActivityDisabledVPP struct {
+	Location string `json:"location"`
+}
+
+func (a ActivityDisabledVPP) ActivityName() string {
+	return "disabled_vpp"
+}
+
+func (a ActivityDisabledVPP) Documentation() (activity string, details string, detailsExample string) {
+	return "Generated when VPP features are disabled in Fleet.", `This activity contains the following fields:
+- "location": Location associated with the VPP content token for the disabled VPP features.`, `{
+  "location": "Acme Inc."
+}`
+}
+
+type ActivityAddedAppStoreApp struct {
+	SoftwareTitle    string                  `json:"software_title"`
+	SoftwareTitleId  uint                    `json:"software_title_id"`
+	AppStoreID       string                  `json:"app_store_id"`
+	TeamName         *string                 `json:"team_name"`
+	TeamID           *uint                   `json:"team_id"`
+	Platform         AppleDevicePlatform     `json:"platform"`
+	SelfService      bool                    `json:"self_service"`
+	LabelsIncludeAny []ActivitySoftwareLabel `json:"labels_include_any,omitempty"`
+	LabelsExcludeAny []ActivitySoftwareLabel `json:"labels_exclude_any,omitempty"`
+}
+
+func (a ActivityAddedAppStoreApp) ActivityName() string {
+	return "added_app_store_app"
+}
+
+func (a ActivityAddedAppStoreApp) Documentation() (activity string, details string, detailsExample string) {
+	return "Generated when an App Store app is added to Fleet.", `This activity contains the following fields:
+- "software_title": Name of the App Store app.
+- "software_title_id": ID of the added software title.
+- "app_store_id": ID of the app on the Apple App Store.
+- "platform": Platform of the app (` + "`darwin`, `ios`, or `ipados`" + `).
+- "self_service": App installation can be initiated by device owner.
+- "team_name": Name of the team to which this App Store app was added, or ` + "`null`" + ` if it was added to no team.
+- "team_id": ID of the team to which this App Store app was added, or ` + "`null`" + `if it was added to no team.
+- "labels_include_any": Target hosts that have any label in the array.
+- "labels_exclude_any": Target hosts that don't have any label in the array.`, `{
+  "software_title": "Logic Pro",
+  "software_title_id": 123,
+  "app_store_id": "1234567",
+  "platform": "darwin",
+  "self_service": false,
+  "team_name": "Workstations",
+  "team_id": 1,
+  "labels_include_any": [
+    {
+      "name": "Engineering",
+      "id": 12
+    },
+    {
+      "name": "Product",
+      "id": 17
+    }
+  ]
+}`
+}
+
+type ActivityDeletedAppStoreApp struct {
+	SoftwareTitle    string                  `json:"software_title"`
+	AppStoreID       string                  `json:"app_store_id"`
+	TeamName         *string                 `json:"team_name"`
+	TeamID           *uint                   `json:"team_id"`
+	Platform         AppleDevicePlatform     `json:"platform"`
+	LabelsIncludeAny []ActivitySoftwareLabel `json:"labels_include_any,omitempty"`
+	LabelsExcludeAny []ActivitySoftwareLabel `json:"labels_exclude_any,omitempty"`
+}
+
+func (a ActivityDeletedAppStoreApp) ActivityName() string {
+	return "deleted_app_store_app"
+}
+
+func (a ActivityDeletedAppStoreApp) Documentation() (activity string, details string, detailsExample string) {
+	return "Generated when an App Store app is deleted from Fleet.", `This activity contains the following fields:
+- "software_title": Name of the App Store app.
+- "app_store_id": ID of the app on the Apple App Store.
+- "platform": Platform of the app (` + "`darwin`, `ios`, or `ipados`" + `).
+- "team_name": Name of the team from which this App Store app was deleted, or ` + "`null`" + ` if it was deleted from no team.
+- "team_id": ID of the team from which this App Store app was deleted, or ` + "`null`" + `if it was deleted from no team.
+- "labels_include_any": Target hosts that have any label in the array.
+- "labels_exclude_any": Target hosts that don't have any label in the array`, `{
+  "software_title": "Logic Pro",
+  "app_store_id": "1234567",
+  "platform": "darwin",
+  "team_name": "Workstations",
+  "team_id": 1,
+  "labels_include_any": [
+    {
+      "name": "Engineering",
+      "id": 12
+    },
+    {
+      "name": "Product",
+      "id": 17
+    }
+  ]
+}`
+}
+
+type ActivityInstalledAppStoreApp struct {
+	HostID          uint    `json:"host_id"`
+	HostDisplayName string  `json:"host_display_name"`
+	SoftwareTitle   string  `json:"software_title"`
+	AppStoreID      string  `json:"app_store_id"`
+	CommandUUID     string  `json:"command_uuid"`
+	Status          string  `json:"status,omitempty"`
+	SelfService     bool    `json:"self_service"`
+	PolicyID        *uint   `json:"policy_id"`
+	PolicyName      *string `json:"policy_name"`
+}
+
+func (a ActivityInstalledAppStoreApp) HostIDs() []uint {
+	return []uint{a.HostID}
+}
+
+func (a ActivityInstalledAppStoreApp) ActivityName() string {
+	return "installed_app_store_app"
+}
+
+func (a ActivityInstalledAppStoreApp) WasFromAutomation() bool {
+	return a.PolicyID != nil
+}
+
+func (a ActivityInstalledAppStoreApp) Documentation() (string, string, string) {
+	return "Generated when an App Store app is installed on a device.", `This activity contains the following fields:
+- "host_id": ID of the host on which the app was installed.
+- "self_service": App installation was initiated by device owner.
+- "host_display_name": Display name of the host.
+- "software_title": Name of the App Store app.
+- "app_store_id": ID of the app on the Apple App Store.
+- "status": Status of the App Store app installation.
+- "command_uuid": UUID of the MDM command used to install the app.
+- "policy_id": ID of the policy whose failure triggered the install. Null if no associated policy.
+- "policy_name": Name of the policy whose failure triggered the install. Null if no associated policy.
+`, `{
+  "host_id": 42,
+  "self_service": true,
+  "host_display_name": "Anna's MacBook Pro",
+  "software_title": "Logic Pro",
+  "app_store_id": "1234567",
+  "command_uuid": "98765432-1234-1234-1234-1234567890ab",
+  "policy_id": 123,
+  "policy_name": "[Install Software] Logic Pro"
+}`
+}
+
+type ActivityEditedAppStoreApp struct {
+	SoftwareTitle    string                  `json:"software_title"`
+	SoftwareTitleID  uint                    `json:"software_title_id"`
+	AppStoreID       string                  `json:"app_store_id"`
+	TeamName         *string                 `json:"team_name"`
+	TeamID           *uint                   `json:"team_id"`
+	Platform         AppleDevicePlatform     `json:"platform"`
+	SelfService      bool                    `json:"self_service"`
+	LabelsIncludeAny []ActivitySoftwareLabel `json:"labels_include_any,omitempty"`
+	LabelsExcludeAny []ActivitySoftwareLabel `json:"labels_exclude_any,omitempty"`
+}
+
+func (a ActivityEditedAppStoreApp) ActivityName() string {
+	return "edited_app_store_app"
+}
+
+func (a ActivityEditedAppStoreApp) Documentation() (activity string, details string, detailsExample string) {
+	return "Generated when an App Store app is updated in Fleet.", `This activity contains the following fields:
+- "software_title": Name of the App Store app.
+- "software_title_id": ID of the updated app's software title.
+- "app_store_id": ID of the app on the Apple App Store.
+- "platform": Platform of the app (` + "`darwin`, `ios`, or `ipados`" + `).
+- "self_service": App installation can be initiated by device owner.
+- "team_name": Name of the team on which this App Store app was updated, or ` + "`null`" + ` if it was updated on no team.
+- "team_id": ID of the team on which this App Store app was updated, or ` + "`null`" + `if it was updated on no team.
+- "labels_include_any": Target hosts that have any label in the array.
+- "labels_exclude_any": Target hosts that don't have any label in the array.`, `{
+  "software_title": "Logic Pro",
+  "software_title_id": 123,
+  "app_store_id": "1234567",
+  "platform": "darwin",
+  "self_service": true,
+  "team_name": "Workstations",
+  "team_id": 1,
+  "labels_include_any": [
+    {
+      "name": "Engineering",
+      "id": 12
+    },
+    {
+      "name": "Product",
+      "id": 17
+    }
+  ]
+}`
+}
+
+type ActivityAddedNDESSCEPProxy struct{}
+
+func (a ActivityAddedNDESSCEPProxy) ActivityName() string {
+	return "added_ndes_scep_proxy"
+}
+
+func (a ActivityAddedNDESSCEPProxy) Documentation() (activity string, details string, detailsExample string) {
+	return "Generated when NDES SCEP proxy is configured in Fleet.", `This activity does not contain any detail fields.`, ``
+}
+
+type ActivityDeletedNDESSCEPProxy struct{}
+
+func (a ActivityDeletedNDESSCEPProxy) ActivityName() string {
+	return "deleted_ndes_scep_proxy"
+}
+
+func (a ActivityDeletedNDESSCEPProxy) Documentation() (activity string, details string, detailsExample string) {
+	return "Generated when NDES SCEP proxy configuration is deleted in Fleet.", `This activity does not contain any detail fields.`, ``
+}
+
+type ActivityEditedNDESSCEPProxy struct{}
+
+func (a ActivityEditedNDESSCEPProxy) ActivityName() string {
+	return "edited_ndes_scep_proxy"
+}
+
+func (a ActivityEditedNDESSCEPProxy) Documentation() (activity string, details string, detailsExample string) {
+	return "Generated when NDES SCEP proxy configuration is edited in Fleet.", `This activity does not contain any detail fields.`, ``
 }

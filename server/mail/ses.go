@@ -23,12 +23,9 @@ type sesSender struct {
 }
 
 func getFromSES(e fleet.Email) (string, error) {
-	if e.Config == nil {
-		return "", errors.New("app config is nil")
-	}
-	serverURL, err := url.Parse(e.Config.ServerSettings.ServerURL)
+	serverURL, err := url.Parse(e.ServerURL)
 	if err != nil || len(serverURL.Host) == 0 {
-		return "", fmt.Errorf("failed to parse server url %s err: %w", e.Config.ServerSettings.ServerURL, err)
+		return "", fmt.Errorf("failed to parse server url %s err: %w", e.ServerURL, err)
 	}
 	return fmt.Sprintf("From: %s\r\n", fmt.Sprintf("do-not-reply@%s", serverURL.Host)), nil
 }
@@ -44,7 +41,11 @@ func (s *sesSender) SendEmail(e fleet.Email) error {
 	return s.sendMail(e, msg)
 }
 
-func NewSESSender(region, endpointURL, id, secret, stsAssumeRoleArn, sourceArn string) (*sesSender, error) {
+func (s *sesSender) CanSendEmail(smtpSettings fleet.SMTPSettings) bool {
+	return s.client != nil
+}
+
+func NewSESSender(region, endpointURL, id, secret, stsAssumeRoleArn, stsExternalID, sourceArn string) (*sesSender, error) {
 	conf := &aws.Config{
 		Region:   &region,
 		Endpoint: &endpointURL, // empty string or nil will use default values
@@ -62,7 +63,11 @@ func NewSESSender(region, endpointURL, id, secret, stsAssumeRoleArn, sourceArn s
 	}
 
 	if stsAssumeRoleArn != "" {
-		creds := stscreds.NewCredentials(sess, stsAssumeRoleArn)
+		creds := stscreds.NewCredentials(sess, stsAssumeRoleArn, func(provider *stscreds.AssumeRoleProvider) {
+			if stsExternalID != "" {
+				provider.ExternalID = &stsExternalID
+			}
+		})
 		conf.Credentials = creds
 
 		sess, err = session.NewSession(conf)
@@ -87,7 +92,6 @@ func (s *sesSender) sendMail(e fleet.Email, msg []byte) error {
 		RawMessage:   &ses.RawMessage{Data: msg},
 		SourceArn:    &s.sourceArn,
 	})
-
 	if err != nil {
 		return err
 	}

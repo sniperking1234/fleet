@@ -1,27 +1,25 @@
 import React, { useContext, useState } from "react";
 import { Tab, Tabs, TabList, TabPanel } from "react-tabs";
-import { useQuery } from "react-query";
 import FileSaver from "file-saver";
 
 import { NotificationContext } from "context/notification";
-import { AppContext } from "context/app";
 // @ts-ignore
 import { stringToClipboard } from "utilities/copy_text";
-
-import configAPI from "services/entities/config";
+import { IConfig } from "interfaces/config";
 
 import Button from "components/buttons/Button";
+import Icon from "components/Icon/Icon";
 import RevealButton from "components/buttons/RevealButton";
 // @ts-ignore
 import InputField from "components/forms/fields/InputField";
-import Checkbox from "components/forms/fields/Checkbox";
 import TooltipWrapper from "components/TooltipWrapper";
 import TabsWrapper from "components/TabsWrapper";
+import InfoBanner from "components/InfoBanner/InfoBanner";
+import CustomLink from "components/CustomLink/CustomLink";
+import Radio from "components/forms/fields/Radio";
 
 import { isValidPemCertificate } from "../../../pages/hosts/ManageHostsPage/helpers";
-
-import CopyIcon from "../../../../assets/images/icon-copy-clipboard-fleet-blue-20x20@2x.png";
-import DownloadIcon from "../../../../assets/images/icon-download-12x12@2x.png";
+import IosIpadosPanel from "./IosIpadosPanel";
 
 interface IPlatformSubNav {
   name: string;
@@ -38,12 +36,16 @@ const platformSubNav: IPlatformSubNav[] = [
     type: "msi",
   },
   {
-    name: "Linux (RPM)",
-    type: "rpm",
+    name: "Linux",
+    type: "deb",
   },
   {
-    name: "Linux (deb)",
-    type: "deb",
+    name: "ChromeOS",
+    type: "chromeos",
+  },
+  {
+    name: "iOS & iPadOS",
+    type: "ios-ipados",
   },
   {
     name: "Advanced",
@@ -54,6 +56,10 @@ const platformSubNav: IPlatformSubNav[] = [
 interface IPlatformWrapperProps {
   enrollSecret: string;
   onCancel: () => void;
+  certificate: any;
+  isFetchingCertificate: boolean;
+  fetchCertificateError: any;
+  config: IConfig | null;
 }
 
 const baseClass = "platform-wrapper";
@@ -61,25 +67,19 @@ const baseClass = "platform-wrapper";
 const PlatformWrapper = ({
   enrollSecret,
   onCancel,
+  certificate,
+  isFetchingCertificate,
+  fetchCertificateError,
+  config,
 }: IPlatformWrapperProps): JSX.Element => {
-  const { config, isPreviewMode } = useContext(AppContext);
   const { renderFlash } = useContext(NotificationContext);
-  const [copyMessage, setCopyMessage] = useState<Record<string, string>>({});
-  const [includeFleetDesktop, setIncludeFleetDesktop] = useState(true);
-  const [showPlainOsquery, setShowPlainOsquery] = useState(false);
 
-  const {
-    data: certificate,
-    error: fetchCertificateError,
-    isFetching: isFetchingCertificate,
-  } = useQuery<string, Error>(
-    ["certificate"],
-    () => configAPI.loadCertificate(),
-    {
-      enabled: !isPreviewMode,
-      refetchOnWindowFocus: false,
-    }
+  const [copyMessage, setCopyMessage] = useState<Record<string, string>>({});
+  const [hostType, setHostType] = useState<"workstation" | "server">(
+    "workstation"
   );
+  const [showPlainOsquery, setShowPlainOsquery] = useState(false);
+  const [selectedTabIndex, setSelectedTabIndex] = useState(0); // External link requires control in state
 
   let tlsHostname = config?.server_settings.server_url || "";
 
@@ -168,18 +168,18 @@ const PlatformWrapper = ({
     return (
       <div className={`${baseClass}__advanced--fleet-certificate`}>
         {type === "plain" ? (
-          <p className={`${baseClass}__advanced--heading`}>
+          <div className={`${baseClass}__advanced--heading`}>
             Download your Fleet certificate
-          </p>
+          </div>
         ) : (
-          <p
+          <div
             className={`${baseClass}__advanced--heading download-certificate--tooltip`}
           >
             Download your{" "}
             <TooltipWrapper tipContent="A Fleet certificate is required if Fleet is running with a self signed or otherwise untrusted certificate.">
               Fleet certificate:
             </TooltipWrapper>
-          </p>
+          </div>
         )}
         {isFetchingCertificate && (
           <p className={`${baseClass}__certificate-loading`}>
@@ -196,14 +196,14 @@ const PlatformWrapper = ({
                   <br />
                 </>
               )}
-              <a
-                href="#downloadCertificate"
+              <Button
+                variant="text-icon"
                 className={`${baseClass}__fleet-certificate-download`}
                 onClick={onDownloadCertificate}
               >
                 Download
-                <img src={DownloadIcon} alt="download" />
-              </a>
+                <Icon name="download" color="core-fleet-blue" size="small" />
+              </Button>
             </p>
           ) : (
             <p className={`${baseClass}__certificate-error`}>
@@ -221,12 +221,12 @@ const PlatformWrapper = ({
 
   const renderInstallerString = (packageType: string) => {
     return packageType === "advanced"
-      ? `fleetctl package --type=YOUR_TYPE --fleet-url=${config?.server_settings.server_url}
---enroll-secret=${enrollSecret}
---fleet-certificate=PATH_TO_YOUR_CERTIFICATE/fleet.pem`
+      ? `fleetctl package --type=YOUR_TYPE --fleet-url=${config?.server_settings.server_url} --enroll-secret=${enrollSecret} --fleet-certificate=PATH_TO_YOUR_CERTIFICATE/fleet.pem`
       : `fleetctl package --type=${packageType} ${
-          includeFleetDesktop ? "--fleet-desktop " : ""
-        }--fleet-url=${
+          config && !config.server_settings.scripts_disabled
+            ? "--enable-scripts "
+            : ""
+        }${hostType === "workstation" ? "--fleet-desktop " : ""}--fleet-url=${
           config?.server_settings.server_url
         } --enroll-secret=${enrollSecret}`;
   };
@@ -254,184 +254,330 @@ const PlatformWrapper = ({
 
     return (
       <>
-        {packageType === "plain-osquery" ? (
-          <>
-            <p className={`${baseClass}__advanced--heading`}>
-              With{" "}
-              <a
-                href="https://www.osquery.io/downloads"
-                target="_blank"
-                rel="noopener noreferrer"
-              >
-                osquery
-              </a>{" "}
-              installed:
-            </p>
-            <p className={`${baseClass}__advanced--text`}>
-              Run osquery from the directory containing the above files (may
-              require sudo or Run as Administrator privileges):
-            </p>
-          </>
-        ) : (
+        {packageType !== "plain-osquery" && (
           <span className={`${baseClass}__cta`}>
             Run this command with the{" "}
             <a
               className={`${baseClass}__command-line-tool`}
-              href="https://fleetdm.com/docs/using-fleet/fleetctl-cli"
+              href="https://fleetdm.com/learn-more-about/installing-fleetctl"
               target="_blank"
               rel="noopener noreferrer"
             >
               Fleet command-line tool
-            </a>{" "}
-            installed:
+            </a>
+            :
           </span>
         )}{" "}
-        <span className={`${baseClass}__name`}>
-          <span className="buttons">
-            {copyMessage[packageType] && (
-              <span
-                className={`${baseClass}__copy-message`}
-              >{`${copyMessage[packageType]} `}</span>
-            )}
-            <Button
-              variant="unstyled"
-              className={`${baseClass}__installer-copy-icon`}
-              onClick={onCopyInstaller}
-            >
-              <img src={CopyIcon} alt="copy" />
-            </Button>
-          </span>
+        <span className="buttons">
+          <Button
+            variant="unstyled"
+            className={`${baseClass}__installer-copy-icon`}
+            onClick={onCopyInstaller}
+          >
+            <Icon name="copy" />
+          </Button>
+          {copyMessage[packageType] && (
+            <span
+              className={`${baseClass}__copy-message`}
+            >{`${copyMessage[packageType]} `}</span>
+          )}
         </span>
       </>
     );
   };
 
-  const renderTab = (packageType: string) => {
+  const renderChromeOSLabel = (label: string, value: string) => {
+    const onCopyChromeOSLabel = (evt: React.MouseEvent) => {
+      evt.preventDefault();
+
+      stringToClipboard(value)
+        .then(() => setCopyMessage((prev) => ({ ...prev, [label]: "Copied!" })))
+        .catch(() =>
+          setCopyMessage((prev) => ({
+            ...prev,
+            [label]: "Copy failed",
+          }))
+        );
+
+      // Clear message after 1 second
+      setTimeout(
+        () => setCopyMessage((prev) => ({ ...prev, [label]: "" })),
+        1000
+      );
+
+      return false;
+    };
+
+    return (
+      <>
+        {label}
+        <span className="buttons">
+          <Button
+            variant="unstyled"
+            className={`${baseClass}__chromeos-copy-icon`}
+            onClick={onCopyChromeOSLabel}
+          >
+            <Icon name="copy" />
+          </Button>
+          {copyMessage[label] && (
+            <span className={`${baseClass}__copy-message`}>Copied!</span>
+          )}
+        </span>
+      </>
+    );
+  };
+
+  const renderPanel = (packageType: string) => {
+    const CHROME_OS_INFO = {
+      extensionId: "fleeedmmihkfkeemmipgmhhjemlljidg",
+      installationUrl: "https://chrome.fleetdm.com/updates.xml",
+      policyForExtension: `{
+  "fleet_url": {
+    "Value": "${config?.server_settings.server_url}"
+  },
+  "enroll_secret": {
+    "Value": "${enrollSecret}"
+  }
+}`,
+    };
+
+    let packageTypeHelpText = "";
+    if (packageType === "deb") {
+      packageTypeHelpText =
+        "Install this package to add hosts to Fleet. For CentOS, Red Hat, and Fedora Linux, use --type=rpm.";
+    } else if (packageType === "msi") {
+      packageTypeHelpText =
+        "Install this package to add hosts to Fleet. For Windows, this generates an MSI package.";
+    } else if (packageType === "pkg") {
+      packageTypeHelpText = "Install this package to add hosts to Fleet.";
+    }
+
+    if (packageType === "chromeos") {
+      return (
+        <>
+          <div className={`${baseClass}__chromeos--info`}>
+            <p className={`${baseClass}__chromeos--heading`}>
+              In Google Admin:
+            </p>
+            <p>
+              Add the extension for the relevant users & browsers using the
+              information below.
+            </p>
+            <InfoBanner className={`${baseClass}__chromeos--instructions`}>
+              For a step-by-step guide, see the documentation page for{" "}
+              <CustomLink
+                url="https://fleetdm.com/docs/using-fleet/adding-hosts#enroll-chromebooks"
+                text="adding hosts"
+                newTab
+                multiline
+              />
+            </InfoBanner>
+          </div>
+          <InputField
+            readOnly
+            inputWrapperClass={`${baseClass}__installer-input ${baseClass}__chromeos-extension-id`}
+            name="Extension ID"
+            label={renderChromeOSLabel(
+              "Extension ID",
+              CHROME_OS_INFO.extensionId
+            )}
+            value={CHROME_OS_INFO.extensionId}
+          />
+          <InputField
+            readOnly
+            inputWrapperClass={`${baseClass}__installer-input ${baseClass}__chromeos-url`}
+            name="Installation URL"
+            label={renderChromeOSLabel(
+              "Installation URL",
+              CHROME_OS_INFO.installationUrl
+            )}
+            value={CHROME_OS_INFO.installationUrl}
+          />
+          <InputField
+            readOnly
+            inputWrapperClass={`${baseClass}__installer-input ${baseClass}__chromeos-policy-for-extension`}
+            name="Policy for extension"
+            label={renderChromeOSLabel(
+              "Policy for extension",
+              CHROME_OS_INFO.policyForExtension
+            )}
+            type="textarea"
+            value={CHROME_OS_INFO.policyForExtension}
+          />
+        </>
+      );
+    }
+
+    if (packageType === "ios-ipados") {
+      return <IosIpadosPanel enrollSecret={enrollSecret} />;
+    }
+
     if (packageType === "advanced") {
       return (
-        <div className={baseClass}>
-          <div className={`${baseClass}__advanced`}>
-            {renderFleetCertificateBlock("tooltip")}
-            <div className={`${baseClass}__advanced--installer`}>
-              <InputField
-                disabled
-                inputWrapperClass={`${baseClass}__installer-input ${baseClass}__installer-input-${packageType}`}
-                name="installer"
-                label={renderLabel(
-                  packageType,
-                  renderInstallerString(packageType)
-                )}
-                type={"textarea"}
-                value={renderInstallerString(packageType)}
-              />
-              <p>Distribute your package to add hosts to Fleet.</p>
-            </div>
-            <RevealButton
-              className={baseClass}
-              isShowing={showPlainOsquery}
-              hideText={"Plain osquery"}
-              showText={"Plain osquery"}
-              caretPosition={"after"}
-              onClick={() => setShowPlainOsquery((prev) => !prev)}
+        <>
+          {renderFleetCertificateBlock("tooltip")}
+          <div className={`${baseClass}__advanced--installer`}>
+            <InputField
+              readOnly
+              inputWrapperClass={`${baseClass}__installer-input ${baseClass}__installer-input-${packageType}`}
+              name="installer"
+              label={renderLabel(
+                packageType,
+                renderInstallerString(packageType)
+              )}
+              type="textarea"
+              value={renderInstallerString(packageType)}
+              helpText="Distribute your package to add hosts to Fleet."
             />
-            {showPlainOsquery && (
-              <>
-                <div className={`${baseClass}__advanced--enroll-secrets`}>
-                  <p className={`${baseClass}__advanced--heading`}>
-                    Download your enroll secret:
-                  </p>
-                  <p>
-                    Osquery uses an enroll secret to authenticate with the Fleet
-                    server.
-                    <br />
-                    <a
-                      href="#downloadEnrollSecret"
-                      onClick={onDownloadEnrollSecret}
-                    >
-                      Download
-                      <img src={DownloadIcon} alt="download icon" />
-                    </a>
-                  </p>
-                </div>
-                {renderFleetCertificateBlock("plain")}
-                <div className={`${baseClass}__advanced--flagfile`}>
-                  <p className={`${baseClass}__advanced--heading`}>
-                    Download your flagfile:
-                  </p>
-                  <p>
-                    If using the enroll secret and server certificate downloaded
-                    above, use the generated flagfile. In some configurations,
-                    modifications may need to be made.
-                    <br />
-                    {fetchCertificateError ? (
-                      <span className={`${baseClass}__error`}>
-                        {fetchCertificateError}
-                      </span>
-                    ) : (
-                      <a href="#downloadFlagfile" onClick={onDownloadFlagfile}>
-                        Download
-                        <img src={DownloadIcon} alt="download icon" />
-                      </a>
-                    )}
-                  </p>
-                </div>
-                <div className={`${baseClass}__advanced--osqueryd`}>
-                  <InputField
-                    disabled
-                    inputWrapperClass={`${baseClass}__run-osquery-input`}
-                    name="run-osquery"
-                    label={renderLabel(
-                      "plain-osquery",
-                      "osqueryd --flagfile=flagfile.txt --verbose"
-                    )}
-                    type={"text"}
-                    value={"osqueryd --flagfile=flagfile.txt --verbose"}
-                  />
-                </div>
-              </>
-            )}
           </div>
-        </div>
+          <div>
+            <InfoBanner className={`${baseClass}__chrome--instructions`}>
+              This works for macOS, Windows, and Linux hosts. To add
+              Chromebooks,{" "}
+              <Button
+                variant="text-link"
+                onClick={() => setSelectedTabIndex(4)}
+              >
+                click here
+              </Button>
+              .
+            </InfoBanner>
+          </div>
+          <RevealButton
+            className={baseClass}
+            isShowing={showPlainOsquery}
+            hideText="Plain osquery"
+            showText="Plain osquery"
+            caretPosition="after"
+            onClick={() => setShowPlainOsquery((prev) => !prev)}
+          />
+          {showPlainOsquery && (
+            <>
+              <div className={`${baseClass}__advanced--enroll-secrets`}>
+                <p className={`${baseClass}__advanced--heading`}>
+                  Download your enroll secret:
+                </p>
+                <p>
+                  Osquery uses an enroll secret to authenticate with the Fleet
+                  server.
+                  <br />
+                  <Button variant="text-icon" onClick={onDownloadEnrollSecret}>
+                    Download
+                    <Icon
+                      name="download"
+                      color="core-fleet-blue"
+                      size="small"
+                    />
+                  </Button>
+                </p>
+              </div>
+              {renderFleetCertificateBlock("plain")}
+              <div className={`${baseClass}__advanced--flagfile`}>
+                <p className={`${baseClass}__advanced--heading`}>
+                  Download your flagfile:
+                </p>
+                <p>
+                  If using the enroll secret and server certificate downloaded
+                  above, use the generated flagfile. In some configurations,
+                  modifications may need to be made.
+                  <br />
+                  {fetchCertificateError ? (
+                    <span className={`${baseClass}__error`}>
+                      {fetchCertificateError}
+                    </span>
+                  ) : (
+                    <Button variant="text-icon" onClick={onDownloadFlagfile}>
+                      Download
+                      <Icon
+                        name="download"
+                        color="core-fleet-blue"
+                        size="small"
+                      />
+                    </Button>
+                  )}
+                </p>
+              </div>
+              <div className={`${baseClass}__advanced--osqueryd`}>
+                <p className={`${baseClass}__advanced--heading`}>
+                  With{" "}
+                  <a
+                    href="https://www.osquery.io/downloads"
+                    target="_blank"
+                    rel="noopener noreferrer"
+                  >
+                    osquery
+                  </a>{" "}
+                  installed:
+                </p>
+                <p className={`${baseClass}__advanced--text`}>
+                  Run osquery from the directory containing the above files (may
+                  require sudo or Run as Administrator privileges):
+                </p>
+                <InputField
+                  readOnly
+                  inputWrapperClass={`${baseClass}__run-osquery-input`}
+                  name="run-osquery"
+                  label={renderLabel(
+                    "plain-osquery",
+                    "osqueryd --flagfile=flagfile.txt --verbose"
+                  )}
+                  type="text"
+                  value="osqueryd --flagfile=flagfile.txt --verbose"
+                />
+              </div>
+            </>
+          )}
+        </>
       );
     }
 
     return (
-      <>
+      // "form" className applies the global form styling
+      <div className="form">
         {packageType !== "pkg" && (
-          <Checkbox
-            name="include-fleet-desktop"
-            onChange={(value: boolean) => setIncludeFleetDesktop(value)}
-            value={includeFleetDesktop}
-          >
-            <>
-              Include&nbsp;
-              <TooltipWrapper
-                tipContent={
-                  "Include Fleet Desktop if your’re adding workstations."
-                }
-              >
-                Fleet Desktop
-              </TooltipWrapper>
-            </>
-          </Checkbox>
+          // Windows & Linux
+          <div className="form-field">
+            <div className="form-field__label">Type</div>
+            <Radio
+              className={`${baseClass}__radio-input`}
+              label="Workstation"
+              id="workstation-host"
+              checked={hostType === "workstation"}
+              value="workstation"
+              name="host-typ"
+              onChange={() => setHostType("workstation")}
+            />
+            <Radio
+              className={`${baseClass}__radio-input`}
+              label="Server"
+              id="server-host"
+              checked={hostType === "server"}
+              value="server"
+              name="host-type"
+              onChange={() => setHostType("server")}
+            />
+          </div>
         )}
         <InputField
-          disabled
+          readOnly
           inputWrapperClass={`${baseClass}__installer-input ${baseClass}__installer-input-${packageType}`}
           name="installer"
           label={renderLabel(packageType, renderInstallerString(packageType))}
-          type={"textarea"}
+          type="textarea"
           value={renderInstallerString(packageType)}
+          helpText={packageTypeHelpText}
         />
-        <span>Distribute your package to add hosts to Fleet.</span>
-      </>
+      </div>
     );
   };
 
   return (
     <div className={baseClass}>
       <TabsWrapper>
-        <Tabs>
+        <Tabs
+          onSelect={(index) => setSelectedTabIndex(index)}
+          selectedIndex={selectedTabIndex}
+        >
           <TabList>
             {platformSubNav.map((navItem) => {
               // Bolding text when the tab is active causes a layout shift
@@ -448,7 +594,9 @@ const PlatformWrapper = ({
             // so we add a hidden pseudo element with the same text string
             return (
               <TabPanel className={`${baseClass}__info`} key={navItem.type}>
-                {renderTab(navItem.type)}
+                <div className={`${baseClass} form`}>
+                  {renderPanel(navItem.type)}
+                </div>
               </TabPanel>
             );
           })}

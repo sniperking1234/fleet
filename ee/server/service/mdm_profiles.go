@@ -4,6 +4,7 @@ import "text/template"
 
 type fileVaultProfileOptions struct {
 	PayloadIdentifier    string
+	PayloadName          string
 	Base64DerCertificate string
 }
 
@@ -30,6 +31,10 @@ var fileVaultProfileTemplate = template.Must(template.New("").Option("missingkey
 			<integer>1</integer>
 			<key>ShowRecoveryKey</key>
 			<false/>
+			<key>DeferForceAtUserLoginMaxBypassAttempts</key>
+			<integer>1</integer>
+			<key>ForceEnableInSetupAssistant</key>
+			<true/>
 		</dict>
 		<dict>
 			<key>EncryptCertPayloadUUID</key>
@@ -64,20 +69,20 @@ var fileVaultProfileTemplate = template.Must(template.New("").Option("missingkey
 			<integer>1</integer>
 		</dict>
 		<dict>
-            <key>dontAllowFDEDisable</key>
-            <true/>
-            <key>PayloadIdentifier</key>
-            <string>com.apple.MCX.62024f29-105E-497A-A724-1D5BA4D9E854</string>
-            <key>PayloadType</key>
-            <string>com.apple.MCX</string>
-            <key>PayloadUUID</key>
-            <string>62024f29-105E-497A-A724-1D5BA4D9E854</string>
-            <key>PayloadVersion</key>
-            <integer>1</integer>
-        </dict>
+			<key>dontAllowFDEDisable</key>
+			<true/>
+			<key>PayloadIdentifier</key>
+			<string>com.apple.MCX.62024f29-105E-497A-A724-1D5BA4D9E854</string>
+			<key>PayloadType</key>
+			<string>com.apple.MCX</string>
+			<key>PayloadUUID</key>
+			<string>62024f29-105E-497A-A724-1D5BA4D9E854</string>
+			<key>PayloadVersion</key>
+			<integer>1</integer>
+		</dict>
 	</array>
 	<key>PayloadDisplayName</key>
-	<string>Disk encryption</string>
+	<string>{{ .PayloadName }}</string>
 	<key>PayloadIdentifier</key>
 	<string>{{ .PayloadIdentifier }}</string>
 	<key>PayloadType</key>
@@ -88,3 +93,83 @@ var fileVaultProfileTemplate = template.Must(template.New("").Option("missingkey
 	<integer>1</integer>
 </dict>
 </plist>`))
+
+type windowsOSUpdatesProfileOptions struct {
+	Deadline    int
+	GracePeriod int
+}
+
+var windowsOSUpdatesProfileTemplate = template.Must(template.New("").Option("missingkey=error").Parse(`
+<Replace>
+	<Item>
+		<Target>
+			<LocURI>./Device/Vendor/MSFT/Policy/Config/Update/ConfigureDeadlineForFeatureUpdates</LocURI>
+		</Target>
+		<Meta>
+			<Type xmlns="syncml:metinf">text/plain</Type>
+			<Format xmlns="syncml:metinf">int</Format>
+		</Meta>
+		<Data>{{ .Deadline }}</Data>
+	</Item>
+</Replace>
+<Replace>
+	<Item>
+		<Target>
+			<LocURI>./Device/Vendor/MSFT/Policy/Config/Update/ConfigureDeadlineForQualityUpdates</LocURI>
+		</Target>
+		<Meta>
+			<Type xmlns="syncml:metinf">text/plain</Type>
+			<Format xmlns="syncml:metinf">int</Format>
+		</Meta>
+		<Data>{{ .Deadline }}</Data>
+	</Item>
+</Replace>
+<Replace>
+	<Item>
+		<Target>
+			<LocURI>./Device/Vendor/MSFT/Policy/Config/Update/ConfigureDeadlineGracePeriod</LocURI>
+		</Target>
+		<Meta>
+			<Type xmlns="syncml:metinf">text/plain</Type>
+			<Format xmlns="syncml:metinf">int</Format>
+		</Meta>
+		<Data>{{ .GracePeriod }}</Data>
+	</Item>
+</Replace>
+<Replace>
+	<Item>
+		<Target>
+			<LocURI>./Device/Vendor/MSFT/Policy/Config/Update/AllowAutoUpdate</LocURI>
+		</Target>
+		<Meta>
+			<Type xmlns="syncml:metinf">text/plain</Type>
+			<Format xmlns="syncml:metinf">int</Format>
+		</Meta>
+		<Data>1</Data>
+	</Item>
+</Replace>
+<Replace>
+	<Item>
+		<Target>
+			<LocURI>./Device/Vendor/MSFT/Policy/Config/Update/SetDisablePauseUXAccess</LocURI>
+		</Target>
+		<Meta>
+			<Type xmlns="syncml:metinf">text/plain</Type>
+			<Format xmlns="syncml:metinf">int</Format>
+		</Meta>
+		<Data>1</Data>
+	</Item>
+</Replace>
+<Replace>
+	<Item>
+		<Target>
+			<LocURI>./Device/Vendor/MSFT/Policy/Config/Update/ConfigureDeadlineNoAutoReboot</LocURI>
+		</Target>
+		<Meta>
+			<Type xmlns="syncml:metinf">text/plain</Type>
+			<Format xmlns="syncml:metinf">int</Format>
+		</Meta>
+		<Data>1</Data>
+	</Item>
+</Replace>
+`))

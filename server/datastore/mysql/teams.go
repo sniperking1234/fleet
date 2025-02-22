@@ -4,8 +4,11 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"strings"
+
+	"golang.org/x/text/unicode/norm"
 
 	"github.com/fleetdm/fleet/v4/server/contexts/ctxerr"
 	"github.com/fleetdm/fleet/v4/server/fleet"
@@ -15,19 +18,25 @@ import (
 
 var teamSearchColumns = []string{"name"}
 
+const teamColumns = `id, created_at, name, filename, description, config`
+
 func (ds *Datastore) NewTeam(ctx context.Context, team *fleet.Team) (*fleet.Team, error) {
+	// We must normalize the name for full Unicode support (Unicode equivalence).
+	team.Name = norm.NFC.String(team.Name)
 	err := ds.withRetryTxx(ctx, func(tx sqlx.ExtContext) error {
 		query := `
     INSERT INTO teams (
       name,
+	  filename,
       description,
       config
-    ) VALUES (?, ?, ?)
+    ) VALUES (?, ?, ?, ?)
     `
 		result, err := tx.ExecContext(
 			ctx,
 			query,
 			team.Name,
+			team.Filename,
 			team.Description,
 			team.Config,
 		)
@@ -36,7 +45,7 @@ func (ds *Datastore) NewTeam(ctx context.Context, team *fleet.Team) (*fleet.Team
 		}
 
 		id, _ := result.LastInsertId()
-		team.ID = uint(id)
+		team.ID = uint(id) //nolint:gosec // dismiss G115
 
 		return saveTeamSecretsDB(ctx, tx, team)
 	})
@@ -47,12 +56,16 @@ func (ds *Datastore) NewTeam(ctx context.Context, team *fleet.Team) (*fleet.Team
 }
 
 func (ds *Datastore) Team(ctx context.Context, tid uint) (*fleet.Team, error) {
-	return teamDB(ctx, ds.reader, tid)
+	return teamDB(ctx, ds.reader(ctx), tid, true)
 }
 
-func teamDB(ctx context.Context, q sqlx.QueryerContext, tid uint) (*fleet.Team, error) {
+func (ds *Datastore) TeamWithoutExtras(ctx context.Context, tid uint) (*fleet.Team, error) {
+	return teamDB(ctx, ds.reader(ctx), tid, false)
+}
+
+func teamDB(ctx context.Context, q sqlx.QueryerContext, tid uint, withExtras bool) (*fleet.Team, error) {
 	stmt := `
-		SELECT * FROM teams
+		SELECT ` + teamColumns + ` FROM teams
 			WHERE id = ?
 	`
 	team := &fleet.Team{}
@@ -64,18 +77,20 @@ func teamDB(ctx context.Context, q sqlx.QueryerContext, tid uint) (*fleet.Team, 
 		return nil, ctxerr.Wrap(ctx, err, "select team")
 	}
 
-	if err := loadSecretsForTeamsDB(ctx, q, []*fleet.Team{team}); err != nil {
-		return nil, ctxerr.Wrap(ctx, err, "getting secrets for teams")
-	}
+	if withExtras {
+		if err := loadSecretsForTeamsDB(ctx, q, []*fleet.Team{team}); err != nil {
+			return nil, ctxerr.Wrap(ctx, err, "getting secrets for teams")
+		}
 
-	if err := loadUsersForTeamDB(ctx, q, team); err != nil {
-		return nil, err
-	}
-	if err := loadHostCountForTeamDB(ctx, q, team); err != nil {
-		return nil, err
-	}
-	if err := loadFeaturesForTeamDB(ctx, q, team); err != nil {
-		return nil, err
+		if err := loadUsersForTeamDB(ctx, q, team); err != nil {
+			return nil, err
+		}
+		if err := loadHostCountForTeamDB(ctx, q, team); err != nil {
+			return nil, err
+		}
+		if err := loadFeaturesForTeamDB(ctx, q, team); err != nil {
+			return nil, err
+		}
 	}
 
 	return team, nil
@@ -91,7 +106,14 @@ func saveTeamSecretsDB(ctx context.Context, q sqlx.ExtContext, team *fleet.Team)
 
 func (ds *Datastore) DeleteTeam(ctx context.Context, tid uint) error {
 	return ds.withRetryTxx(ctx, func(tx sqlx.ExtContext) error {
-		_, err := tx.ExecContext(ctx, `DELETE FROM teams WHERE id = ?`, tid)
+		// Delete team policies first, because policies can have associated installers and scripts
+		// which may be deleted on cascade before deleting the policies (which are also deleted on cascade).
+		_, err := tx.ExecContext(ctx, `DELETE FROM policies WHERE team_id = ?`, tid)
+		if err != nil {
+			return ctxerr.Wrapf(ctx, err, "deleting policies for team %d", tid)
+		}
+
+		_, err = tx.ExecContext(ctx, `DELETE FROM teams WHERE id = ?`, tid)
 		if err != nil {
 			return ctxerr.Wrapf(ctx, err, "delete team %d", tid)
 		}
@@ -101,9 +123,19 @@ func (ds *Datastore) DeleteTeam(ctx context.Context, tid uint) error {
 			return ctxerr.Wrapf(ctx, err, "deleting pack_targets for team %d", tid)
 		}
 
-		_, err = tx.ExecContext(ctx, `DELETE FROM packs WHERE pack_type=?`, teamSchedulePackTypeByID(tid))
+		_, err = tx.ExecContext(ctx, `DELETE FROM mdm_apple_configuration_profiles WHERE team_id=?`, tid)
 		if err != nil {
-			return ctxerr.Wrapf(ctx, err, "deleting team global packs for team %d", tid)
+			return ctxerr.Wrapf(ctx, err, "deleting mdm_apple_configuration_profiles for team %d", tid)
+		}
+
+		_, err = tx.ExecContext(ctx, `DELETE FROM mdm_windows_configuration_profiles WHERE team_id=?`, tid)
+		if err != nil {
+			return ctxerr.Wrapf(ctx, err, "deleting mdm_windows_configuration_profiles for team %d", tid)
+		}
+
+		_, err = tx.ExecContext(ctx, `DELETE FROM mdm_apple_declarations WHERE team_id=?`, tid)
+		if err != nil {
+			return ctxerr.Wrapf(ctx, err, "deleting mdm_apple_declarations for team %d", tid)
 		}
 
 		return nil
@@ -111,31 +143,56 @@ func (ds *Datastore) DeleteTeam(ctx context.Context, tid uint) error {
 }
 
 func (ds *Datastore) TeamByName(ctx context.Context, name string) (*fleet.Team, error) {
+	// We must normalize the name for full Unicode support (Unicode equivalence).
+	nameUnicode := norm.NFC.String(name)
 	stmt := `
-		SELECT * FROM teams
+		SELECT ` + teamColumns + ` FROM teams
 			WHERE name = ?
 	`
 	team := &fleet.Team{}
 
-	if err := sqlx.GetContext(ctx, ds.reader, team, stmt, name); err != nil {
+	if err := sqlx.GetContext(ctx, ds.reader(ctx), team, stmt, nameUnicode); err != nil {
+		if err == sql.ErrNoRows {
+			return nil, ctxerr.Wrap(ctx, notFound("Team").WithName(nameUnicode))
+		}
 		return nil, ctxerr.Wrap(ctx, err, "select team")
 	}
 
-	if err := loadSecretsForTeamsDB(ctx, ds.reader, []*fleet.Team{team}); err != nil {
+	return ds.loadExtrasForTeam(ctx, team)
+}
+
+func (ds *Datastore) loadExtrasForTeam(ctx context.Context, team *fleet.Team) (*fleet.Team, error) {
+	if err := loadSecretsForTeamsDB(ctx, ds.reader(ctx), []*fleet.Team{team}); err != nil {
 		return nil, ctxerr.Wrap(ctx, err, "getting secrets for teams")
 	}
 
-	if err := loadUsersForTeamDB(ctx, ds.reader, team); err != nil {
+	if err := loadUsersForTeamDB(ctx, ds.reader(ctx), team); err != nil {
 		return nil, err
 	}
-	if err := loadHostCountForTeamDB(ctx, ds.reader, team); err != nil {
+	if err := loadHostCountForTeamDB(ctx, ds.reader(ctx), team); err != nil {
 		return nil, err
 	}
-	if err := loadFeaturesForTeamDB(ctx, ds.reader, team); err != nil {
+	if err := loadFeaturesForTeamDB(ctx, ds.reader(ctx), team); err != nil {
 		return nil, err
+	}
+	return team, nil
+}
+
+func (ds *Datastore) TeamByFilename(ctx context.Context, filename string) (*fleet.Team, error) {
+	stmt := `
+		SELECT ` + teamColumns + ` FROM teams
+			WHERE filename = ?
+	`
+	team := &fleet.Team{}
+
+	if err := sqlx.GetContext(ctx, ds.reader(ctx), team, stmt, filename); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return nil, ctxerr.Wrap(ctx, notFound("Team").WithMessage("filename not found"))
+		}
+		return nil, ctxerr.Wrap(ctx, err, "select team")
 	}
 
-	return team, nil
+	return ds.loadExtrasForTeam(ctx, team)
 }
 
 func loadUsersForTeamDB(ctx context.Context, q sqlx.QueryerContext, team *fleet.Team) error {
@@ -206,17 +263,20 @@ func saveUsersForTeamDB(ctx context.Context, exec sqlx.ExecerContext, team *flee
 }
 
 func (ds *Datastore) SaveTeam(ctx context.Context, team *fleet.Team) (*fleet.Team, error) {
+	// We must normalize the name for full Unicode support (Unicode equivalence).
+	team.Name = norm.NFC.String(team.Name)
 	err := ds.withRetryTxx(ctx, func(tx sqlx.ExtContext) error {
 		query := `
 UPDATE teams
 SET
     name = ?,
+	filename = ?,
     description = ?,
     config = ?
 WHERE
     id = ?
 `
-		_, err := tx.ExecContext(ctx, query, team.Name, team.Description, team.Config, team.ID)
+		_, err := tx.ExecContext(ctx, query, team.Name, team.Filename, team.Description, team.Config, team.ID)
 		if err != nil {
 			return ctxerr.Wrap(ctx, err, "saving team")
 		}
@@ -224,8 +284,7 @@ WHERE
 		if err := saveUsersForTeamDB(ctx, tx, team); err != nil {
 			return err
 		}
-
-		return updateTeamScheduleDB(ctx, tx, team)
+		return nil
 	})
 	if err != nil {
 		return nil, err
@@ -233,18 +292,11 @@ WHERE
 	return team, nil
 }
 
-func updateTeamScheduleDB(ctx context.Context, exec sqlx.ExecerContext, team *fleet.Team) error {
-	_, err := exec.ExecContext(ctx,
-		`UPDATE packs SET name = ? WHERE pack_type = ?`, teamScheduleName(team), teamSchedulePackType(team),
-	)
-	return ctxerr.Wrap(ctx, err, "update packs")
-}
-
 // ListTeams lists all teams with limit, sort and offset passed in with
 // fleet.ListOptions
 func (ds *Datastore) ListTeams(ctx context.Context, filter fleet.TeamFilter, opt fleet.ListOptions) ([]*fleet.Team, error) {
 	query := fmt.Sprintf(`
-			SELECT *,
+			SELECT `+teamColumns+`,
 				(SELECT count(*) FROM user_teams WHERE team_id = t.id) AS user_count,
 				(SELECT count(*) FROM hosts WHERE team_id = t.id) AS host_count
 			FROM teams t
@@ -252,13 +304,15 @@ func (ds *Datastore) ListTeams(ctx context.Context, filter fleet.TeamFilter, opt
 		`,
 		ds.whereFilterTeams(filter, "t"),
 	)
-	query, params := searchLike(query, nil, opt.MatchQuery, teamSearchColumns...)
-	query = appendListOptionsToSQL(query, &opt)
+	// We must normalize the name for full Unicode support (Unicode equivalence).
+	matchQuery := norm.NFC.String(opt.MatchQuery)
+	query, params := searchLike(query, nil, matchQuery, teamSearchColumns...)
+	query, params = appendListOptionsWithCursorToSQL(query, params, &opt)
 	teams := []*fleet.Team{}
-	if err := sqlx.SelectContext(ctx, ds.reader, &teams, query, params...); err != nil {
+	if err := sqlx.SelectContext(ctx, ds.reader(ctx), &teams, query, params...); err != nil {
 		return nil, ctxerr.Wrap(ctx, err, "list teams")
 	}
-	if err := loadSecretsForTeamsDB(ctx, ds.reader, teams); err != nil {
+	if err := loadSecretsForTeamsDB(ctx, ds.reader(ctx), teams); err != nil {
 		return nil, ctxerr.Wrap(ctx, err, "getting secrets for teams")
 	}
 	return teams, nil
@@ -277,29 +331,41 @@ func loadSecretsForTeamsDB(ctx context.Context, q sqlx.QueryerContext, teams []*
 
 func (ds *Datastore) TeamsSummary(ctx context.Context) ([]*fleet.TeamSummary, error) {
 	teamsSummary := []*fleet.TeamSummary{}
-	if err := sqlx.SelectContext(ctx, ds.reader, &teamsSummary, "SELECT id, name, description FROM teams"); err != nil {
+	if err := sqlx.SelectContext(ctx, ds.reader(ctx), &teamsSummary, "SELECT id, name, description FROM teams"); err != nil {
 		return nil, ctxerr.Wrap(ctx, err, "teams summary")
 	}
 	return teamsSummary, nil
 }
 
+func (ds *Datastore) TeamExists(ctx context.Context, teamID uint) (bool, error) {
+	var exists bool
+	err := ds.writer(ctx).GetContext(ctx, &exists, "SELECT EXISTS(SELECT 1 FROM teams WHERE id = ?)", teamID)
+	if err != nil {
+		return false, ctxerr.Wrap(ctx, err, "team exists")
+	}
+	return exists, nil
+}
+
 func (ds *Datastore) SearchTeams(ctx context.Context, filter fleet.TeamFilter, matchQuery string, omit ...uint) ([]*fleet.Team, error) {
 	sql := fmt.Sprintf(`
-			SELECT *,
+			SELECT %s,
 				(SELECT count(*) FROM user_teams WHERE team_id = t.id) AS user_count,
 				(SELECT count(*) FROM hosts WHERE team_id = t.id) AS host_count
 			FROM teams t
 			WHERE %s AND %s
 		`,
+		teamColumns,
 		ds.whereOmitIDs("t.id", omit),
 		ds.whereFilterTeams(filter, "t"),
 	)
+	// We must normalize the name for full Unicode support (Unicode equivalence).
+	matchQuery = norm.NFC.String(matchQuery)
 	sql, params := searchLike(sql, nil, matchQuery, teamSearchColumns...)
 	teams := []*fleet.Team{}
-	if err := sqlx.SelectContext(ctx, ds.reader, &teams, sql, params...); err != nil {
+	if err := sqlx.SelectContext(ctx, ds.reader(ctx), &teams, sql, params...); err != nil {
 		return nil, ctxerr.Wrap(ctx, err, "search teams")
 	}
-	if err := loadSecretsForTeamsDB(ctx, ds.reader, teams); err != nil {
+	if err := loadSecretsForTeamsDB(ctx, ds.reader(ctx), teams); err != nil {
 		return nil, ctxerr.Wrap(ctx, err, "getting secrets for teams")
 	}
 	return teams, nil
@@ -311,7 +377,7 @@ func (ds *Datastore) TeamEnrollSecrets(ctx context.Context, teamID uint) ([]*fle
 		WHERE team_id = ?
 	`
 	var secrets []*fleet.EnrollSecret
-	if err := sqlx.SelectContext(ctx, ds.reader, &secrets, sql, teamID); err != nil {
+	if err := sqlx.SelectContext(ctx, ds.reader(ctx), &secrets, sql, teamID); err != nil {
 		return nil, ctxerr.Wrap(ctx, err, "get secrets")
 	}
 	return secrets, nil
@@ -330,7 +396,7 @@ func amountTeamsDB(ctx context.Context, db sqlx.QueryerContext) (int, error) {
 func (ds *Datastore) TeamAgentOptions(ctx context.Context, tid uint) (*json.RawMessage, error) {
 	sql := `SELECT config->'$.agent_options' FROM teams WHERE id = ?`
 	var agentOptions *json.RawMessage
-	if err := sqlx.GetContext(ctx, ds.reader, &agentOptions, sql, tid); err != nil {
+	if err := sqlx.GetContext(ctx, ds.reader(ctx), &agentOptions, sql, tid); err != nil {
 		return nil, ctxerr.Wrap(ctx, err, "select team")
 	}
 	return agentOptions, nil
@@ -338,7 +404,7 @@ func (ds *Datastore) TeamAgentOptions(ctx context.Context, tid uint) (*json.RawM
 
 // TeamFeatures loads the features enabled for a team.
 func (ds *Datastore) TeamFeatures(ctx context.Context, tid uint) (*fleet.Features, error) {
-	return teamFeaturesDB(ctx, ds.reader, tid)
+	return teamFeaturesDB(ctx, ds.reader(ctx), tid)
 }
 
 func teamFeaturesDB(ctx context.Context, q sqlx.QueryerContext, tid uint) (*fleet.Features, error) {
@@ -361,7 +427,7 @@ func teamFeaturesDB(ctx context.Context, q sqlx.QueryerContext, tid uint) (*flee
 func (ds *Datastore) TeamMDMConfig(ctx context.Context, tid uint) (*fleet.TeamMDM, error) {
 	sql := `SELECT config->'$.mdm' AS mdm FROM teams WHERE id = ?`
 	var raw *json.RawMessage
-	if err := sqlx.GetContext(ctx, ds.reader, &raw, sql, tid); err != nil {
+	if err := sqlx.GetContext(ctx, ds.reader(ctx), &raw, sql, tid); err != nil {
 		return nil, ctxerr.Wrap(ctx, err, "select team MDM config")
 	}
 	var mdmConfig *fleet.TeamMDM
@@ -381,7 +447,7 @@ func (ds *Datastore) DeleteIntegrationsFromTeams(ctx context.Context, deletedInt
 		updateTeam = `UPDATE teams SET config = ? WHERE id = ?`
 	)
 
-	rows, err := ds.writer.QueryxContext(ctx, listTeams)
+	rows, err := ds.writer(ctx).QueryxContext(ctx, listTeams)
 	if err != nil {
 		return ctxerr.Wrap(ctx, err, "query teams")
 	}
@@ -416,7 +482,7 @@ func (ds *Datastore) DeleteIntegrationsFromTeams(ctx context.Context, deletedInt
 
 			tm.Config.Integrations.Jira = keepJira
 			tm.Config.Integrations.Zendesk = keepZendesk
-			if _, err := ds.writer.ExecContext(ctx, updateTeam, tm.Config, tm.ID); err != nil {
+			if _, err := ds.writer(ctx).ExecContext(ctx, updateTeam, tm.Config, tm.ID); err != nil {
 				return ctxerr.Wrap(ctx, err, "update team config")
 			}
 		}

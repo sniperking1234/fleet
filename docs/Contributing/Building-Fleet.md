@@ -18,13 +18,13 @@ Install the dependencies as described in the following sections, then go to [Clo
 
 Enable the macOS developer tools:
 
-```
+```sh
 xcode-select --install
 ```
 
 Install [Homebrew](https://brew.sh/) to manage dependencies, then:
 
-```
+```sh
 brew install git go node yarn
 ```
 
@@ -32,15 +32,19 @@ brew install git go node yarn
 
 Install dependencies:
 
-```
+```sh
 sudo apt-get install -y git golang make nodejs npm
 sudo npm install -g yarn
+# Install nvm to manage node versions (apt very out of date) https://github.com/nvm-sh/nvm#install--update-script
+curl -o- https://raw.githubusercontent.com/nvm-sh/nvm/v0.39.5/install.sh | bash
+# refresh your session before continuing
+nvm install v20.18.1
 ```
 
 #### Windows
 
 To install dependencies, we recommend using [Chocolatey](https://chocolatey.org/install). Always run Chocolatey in Powershell as an Administrator. Assuming your setup does not include any of our requirements, please run:
-```
+```sh
 choco install nodejs git golang docker make python2 mingw
 npm install -g yarn
 ```
@@ -53,7 +57,7 @@ If you plan to use [WSL](https://learn.microsoft.com/en-us/windows/wsl/install) 
 
 ### Clone and build
 
-```
+```sh
 git clone https://github.com/fleetdm/fleet.git
 cd fleet
 make deps
@@ -68,7 +72,7 @@ The binaries are now available in `./build/`.
 To set up a working local development environment, you must install the following minimum toolset:
 
 * [Go](https://golang.org/doc/install)
-* [Node.js](https://nodejs.org/en/download/current/) and [Yarn](https://yarnpkg.com/en/docs/install)
+* [Node.js v20.18.1](https://nodejs.org/en/download/) and [Yarn](https://yarnpkg.com/en/docs/install)
 * [GNU Make](https://www.gnu.org/software/make/) (probably already installed if you're on macOS/Linux)
 
 Once you have those minimum requirements, check out this [Loom video](https://www.loom.com/share/e7439f058eb44c45af872abe8f8de4a1) that walks through starting up a local development environment for Fleet.
@@ -79,8 +83,18 @@ First, you will need to install Fleet's dependencies.
 
 To do this, run the following from the root of the repository:
 
-```
+```sh
 make deps
+```
+
+Note: If you are using python >= `3.12`, you may have to install `distutils` using pip.
+
+```sh
+pip install setuptools
+```
+or 
+```sh
+pip3 install setuptools
 ```
 
 When pulling changes, it may be necessary to re-run `make deps` if a new Go or JavaScript dependency was added.
@@ -89,8 +103,14 @@ When pulling changes, it may be necessary to re-run `make deps` if a new Go or J
 
 To generate all necessary code (bundling JavaScript into Go, etc.), run the following:
 
-```
+```sh
 make generate
+```
+
+If you are using a Mac computer with Apple Silicon and have not installed Rosetta 2, you will need to do so before running `make generate`.
+
+```sh
+/usr/sbin/softwareupdate --install-rosetta --agree-to-license
 ```
 
 #### Automatic rebuilding of the JavaScript bundle
@@ -99,7 +119,7 @@ Usually, `make generate` takes the JavaScript code, bundles it into a single bun
 
 This makes deploying Fleet a dream since you only have to worry about a single static binary. If you are working on frontend code, it is likely that you don't want to have to manually re-run `make generate` and `make build` every time you edit JavaScript and CSS in order to see your changes in the browser. Instead of running `make generate` to solve this problem, before you build the Fleet binary, run the following command:
 
-```
+```sh
 make generate-dev
 ```
 
@@ -113,7 +133,7 @@ After you run `make generate-dev`, run `make build` to build the binary, launch 
 
 For convenience, Fleet includes a Makefile to build the code:
 
-```
+```sh
 make
 ```
 
@@ -128,27 +148,27 @@ The following assumes that you already installed  [Docker](https://docs.docker.c
 
 To set up a canonical development environment via Docker, run the following from the root of the repository:
 
-```
-docker-compose up
+```sh
+docker compose up
 ```
 
 > Note: you can customize the DB Docker image via the environment variables FLEET_MYSQL_IMAGE and FLEET_MYSQL_PLATFORM. For example:
-> - To run in macOS M1, set FLEET_MYSQL_IMAGE=arm64v8/mysql:oracle FLEET_MYSQL_PLATFORM=linux/arm64/v8
+> - To run in macOS M1+, set FLEET_MYSQL_PLATFORM=linux/arm64/v8
 > - To test with MariaDB, set FLEET_MYSQL_IMAGE to mariadb:10.6 or the like (note MariaDB is not officially supported).
 
 ### Stopping the local development environment
 
 If you'd like to shut down the virtual infrastructure created by Docker, run the following from the root of the repository:
 
-```
-docker-compose down
+```sh
+docker compose down
 ```
 
 ### Setting up the database tables
 
-Once you `docker-compose up` and are running the databases, you can build the code and run the following command to create the database tables:
+Once you `docker compose up` and are running the databases, you can build the code and run the following command to create the database tables:
 
-```
+```sh
 ./build/fleet prepare db --dev
 ```
 
@@ -156,7 +176,7 @@ Once you `docker-compose up` and are running the databases, you can build the co
 
 To start the Fleet server backed by the Docker development infrastructure, run the Fleet binary as follows:
 
-```
+```sh
 ./build/fleet serve --dev
 ```
 
@@ -185,7 +205,7 @@ The [Delve](https://github.com/go-delve/delve) Go debugger can be used for debug
 
 Use the following command in place of `make` and `./build/fleet serve --dev`:
 
-```
+```sh
 dlv debug --build-flags '-tags=full' ./cmd/fleet -- serve --dev
 ```
 
@@ -195,7 +215,7 @@ It is important to pass the `-tags=full` build flag; otherwise, the server will 
 
 You can also run delve in headless mode, which allows you to attach your preferred debugger client and reuse the same session without having to restart the server:
 
-```
+```sh
 dlv debug --build-flags '-tags=full' --headless \
   --api-version=2 --accept-multiclient --continue \
   --listen=127.0.0.1:61179 ./cmd/fleet -- serve --dev
@@ -204,7 +224,7 @@ dlv debug --build-flags '-tags=full' --headless \
 - If you're using Visual Studio Code, there's a launch configuration in the repo.
 - If you're using vim with `vimspector`, you can use the following config:
 
-```
+```json
 {
   "configurations": {
     "Go: Attach to Fleet server": {
@@ -223,3 +243,4 @@ dlv debug --build-flags '-tags=full' --headless \
 ```
 
 <meta name="pageOrderInSection" value="100">
+<meta name="description" value="Learn about building Fleet from code, development infrastructure, and database migrations.">

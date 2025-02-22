@@ -1,15 +1,28 @@
 import React from "react";
-import StatusIndicator from "components/StatusIndicator";
-import Button from "components/buttons/Button";
+
 import { IHostPolicy } from "interfaces/policy";
 import { PolicyResponse, DEFAULT_EMPTY_CELL_VALUE } from "utilities/constants";
+
+import StatusIndicatorWithIcon from "components/StatusIndicatorWithIcon";
+import Button from "components/buttons/Button";
+import HeaderCell from "components/TableContainer/DataTable/HeaderCell";
 import ViewAllHostsLink from "components/ViewAllHostsLink";
+import { IndicatorStatus } from "components/StatusIndicatorWithIcon/StatusIndicatorWithIcon";
+import TooltipTruncatedText from "components/TooltipTruncatedText";
 
 interface IHeaderProps {
   column: {
     title: string;
     isSortedDesc: boolean;
   };
+}
+
+type PolicyStatus = "pass" | "fail";
+
+interface IStatusCellValue {
+  displayName: string;
+  statusName: IndicatorStatus;
+  value: PolicyStatus;
 }
 interface ICellProps {
   cell: {
@@ -30,20 +43,25 @@ interface IDataColumn {
   sortType?: string;
 }
 
-const getPolicyStatus = (policy: IHostPolicy): string => {
-  if (policy.response === "pass") {
-    return "Yes";
-  } else if (policy.response === "fail") {
-    return "No";
-  }
-  return DEFAULT_EMPTY_CELL_VALUE;
-};
-
 // NOTE: cellProps come from react-table
 // more info here https://react-table.tanstack.com/docs/api/useTable#cell-properties
 const generatePolicyTableHeaders = (
-  togglePolicyDetails: (policy: IHostPolicy, teamId?: number) => void
+  togglePolicyDetails: (policy: IHostPolicy, teamId?: number) => void,
+  currentTeamId?: number
 ): IDataColumn[] => {
+  const STATUS_CELL_VALUES: Record<PolicyStatus, IStatusCellValue> = {
+    pass: {
+      displayName: "Yes",
+      statusName: "success",
+      value: "pass",
+    },
+    fail: {
+      displayName: "No",
+      statusName: "error",
+      value: "fail",
+    },
+  };
+
   return [
     {
       title: "Name",
@@ -52,27 +70,47 @@ const generatePolicyTableHeaders = (
       disableSortBy: true,
       Cell: (cellProps) => {
         const { name } = cellProps.row.original;
+
+        const onClickPolicyName = (e: React.MouseEvent) => {
+          // Allows for button to be clickable in a clickable row
+          e.stopPropagation();
+          togglePolicyDetails(cellProps.row.original);
+        };
+
         return (
           <Button
-            className={`policy-info`}
-            onClick={() => {
-              togglePolicyDetails(cellProps.row.original);
-            }}
-            variant={"text-icon"}
+            className="policy-info"
+            onClick={onClickPolicyName}
+            variant="text-icon"
           >
-            <span className={`policy-info-text`}>{name}</span>
+            <TooltipTruncatedText value={name} />
           </Button>
         );
       },
     },
     {
       title: "Status",
-      Header: "Status",
+      Header: (cellProps) => (
+        <HeaderCell
+          value={cellProps.column.title}
+          isSortedDesc={cellProps.column.isSortedDesc}
+        />
+      ),
+      disableSortBy: false,
+      sortType: "caseInsensitive",
       accessor: "response",
-      disableSortBy: true,
       Cell: (cellProps) => {
+        if (cellProps.row.original.response === "") {
+          return <>{DEFAULT_EMPTY_CELL_VALUE}</>;
+        }
+
+        const responseValue =
+          STATUS_CELL_VALUES[cellProps.row.original.response];
         return (
-          <StatusIndicator value={getPolicyStatus(cellProps.row.original)} />
+          <StatusIndicatorWithIcon
+            value={responseValue.displayName}
+            status={responseValue.statusName}
+          />
         );
       },
     },
@@ -92,6 +130,7 @@ const generatePolicyTableHeaders = (
                     cellProps.row.original.response === "pass"
                       ? PolicyResponse.PASSING
                       : PolicyResponse.FAILING,
+                  team_id: currentTeamId,
                 }}
                 className="policy-link"
               />

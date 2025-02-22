@@ -4,12 +4,12 @@
  * https://react-select.com/components
  */
 import Button from "components/buttons/Button";
+import Icon from "components/Icon/Icon";
 import { ILabel } from "interfaces/label";
 import React, { useRef } from "react";
 import { components, GroupHeadingProps } from "react-select-5";
 
 import { IEmptyOption, IGroupOption } from "../LabelFilterSelect/helpers";
-import PlusIcon from "../../../../../../assets/images/icon-plus-16x16@2x.png";
 
 const baseClass = "custom-label-group-heading";
 
@@ -30,7 +30,7 @@ const CustomLabelGroupHeading = (
   const handleInputClick = (
     event: React.MouseEvent<HTMLInputElement, MouseEvent>
   ) => {
-    onClickLabelSearchInput(event);
+    onClickLabelSearchInput && onClickLabelSearchInput(event);
     inputRef.current?.focus();
     event.stopPropagation();
   };
@@ -53,8 +53,8 @@ const CustomLabelGroupHeading = (
               className={`${baseClass}__add-label-btn`}
             >
               <>
-                <span>Add label</span>
-                <img src={PlusIcon} alt="Add label icon" />
+                Add label
+                <Icon name="plus" />
               </>
             </Button>
           )}
@@ -76,6 +76,7 @@ const CustomLabelGroupHeading = (
           onClick={handleInputClick}
           onBlur={onBlurLabelSearchInput}
         />
+        <Icon name="search" />
       </div>
     </components.GroupHeading>
   );

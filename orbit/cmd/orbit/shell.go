@@ -47,7 +47,7 @@ var shellCommand = &cli.Command{
 			return fmt.Errorf("initialize root dir: %w", err)
 		}
 
-		localStore, err := filestore.New(filepath.Join(c.String("root-dir"), "tuf-metadata.json"))
+		localStore, err := filestore.New(filepath.Join(c.String("root-dir"), update.MetadataFileName))
 		if err != nil {
 			log.Fatal().Err(err).Msg("failed to create local metadata store")
 		}
@@ -56,7 +56,7 @@ var shellCommand = &cli.Command{
 		opt := update.DefaultOptions
 
 		// Override default channel with the provided value.
-		opt.Targets.SetTargetChannel("osqueryd", c.String("osqueryd-channel"))
+		opt.Targets.SetTargetChannel(constant.OsqueryTUFTargetName, c.String("osqueryd-channel"))
 
 		opt.RootDirectory = c.String("root-dir")
 		opt.ServerURL = c.String("update-url")
@@ -70,7 +70,7 @@ var shellCommand = &cli.Command{
 		if err := updater.UpdateMetadata(); err != nil {
 			log.Info().Err(err).Msg("failed to update metadata. using saved metadata.")
 		}
-		osquerydLocalTarget, err := updater.Get("osqueryd")
+		osquerydLocalTarget, err := updater.Get(constant.OsqueryTUFTargetName)
 		if err != nil {
 			return err
 		}
@@ -78,14 +78,24 @@ var shellCommand = &cli.Command{
 
 		var g run.Group
 
+		// We use a suffix on the extension path on Windows
+		// because there was an issue when the osqueryd instance ran through
+		// `orbit shell` attempted to register the same named pipe name used by
+		// the osqueryd instance launched by orbit service.
 		extensionPathPostfix := ""
 		if runtime.GOOS == "windows" {
 			extensionPathPostfix = "-" + uuid.New().String()
 		}
 
+		// We use a different path from the orbit daemon
+		// to avoid issues with concurrent accesses to files/databases
+		// (RocksDB lock and/or Windows file locking).
+		dataPath := filepath.Join(c.String("root-dir"), "shell")
+		osqueryDB := filepath.Join(dataPath, "osquery.db")
 		opts := []osquery.Option{
 			osquery.WithShell(),
-			osquery.WithDataPathAndExtensionPathPostfix(filepath.Join(c.String("root-dir"), "shell"), extensionPathPostfix),
+			osquery.WithDataPath(dataPath, extensionPathPostfix),
+			osquery.WithFlags([]string{"--database_path", osqueryDB}),
 		}
 
 		// Detect if the additional arguments have a positional argument.

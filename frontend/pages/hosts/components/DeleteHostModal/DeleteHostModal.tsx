@@ -1,8 +1,11 @@
 import React from "react";
 
+import strUtils from "utilities/strings";
+
 import Modal from "components/Modal";
 import Button from "components/buttons/Button";
 import CustomLink from "components/CustomLink";
+import { LEARN_MORE_ABOUT_BASE_LINK } from "utilities/constants";
 
 const baseClass = "delete-host-modal";
 
@@ -13,6 +16,8 @@ interface IDeleteHostModalProps {
   isAllMatchingHostsSelected?: boolean;
   /** Manage host page only */
   selectedHostIds?: number[];
+  /** Manage host page only */
+  hostsCount?: number;
   /** Host details page only */
   hostName?: string;
   isUpdating: boolean;
@@ -23,40 +28,57 @@ const DeleteHostModal = ({
   onCancel,
   isAllMatchingHostsSelected,
   selectedHostIds,
+  hostsCount,
   hostName,
   isUpdating,
 }: IDeleteHostModalProps): JSX.Element => {
+  const pluralizeHost = () => {
+    if (!selectedHostIds) {
+      return "host";
+    }
+    return strUtils.pluralize(selectedHostIds.length, "host");
+  };
+
   const hostText = () => {
     if (selectedHostIds) {
       return `${selectedHostIds.length}${
         isAllMatchingHostsSelected ? "+" : ""
-      } ${selectedHostIds.length === 1 ? "host" : "hosts"}`;
+      } ${pluralizeHost()}`;
     }
     return hostName;
   };
 
+  const hasManyHosts =
+    selectedHostIds &&
+    isAllMatchingHostsSelected &&
+    hostsCount &&
+    hostsCount >= 500;
+
   return (
-    <Modal
-      title={"Delete host"}
-      onExit={onCancel}
-      onEnter={onSubmit}
-      className={baseClass}
-    >
-      <form className={`${baseClass}__form`}>
+    <Modal title="Delete host" onExit={onCancel} className={baseClass}>
+      <>
         <p>
-          This action will delete <b>{hostText()}</b> from your Fleet instance.
+          This will remove the record of <b>{hostText()}</b> and associated data
+          such as unlock PINs and disk encryption keys.
         </p>
-        <p>If the hosts come back online, they will automatically re-enroll.</p>
-        <p>
-          To prevent re-enrollment,{" "}
-          <CustomLink
-            url={
-              "https://fleetdm.com/docs/using-fleet/faq#how-can-i-uninstall-the-osquery-agent"
-            }
-            text={"uninstall the osquery agent"}
-            newTab
-          />
-        </p>
+        {hasManyHosts && (
+          <p>
+            When deleting a large volume of hosts, it may take some time for
+            this change to be reflected in the UI.
+          </p>
+        )}
+        <ul>
+          <li>
+            macOS, Windows, or Linux hosts will re-appear unless Fleet&apos;s
+            agent is uninstalled.{" "}
+            <CustomLink
+              text="Uninstall Fleet's agent"
+              url={`${LEARN_MORE_ABOUT_BASE_LINK}/uninstall-fleetd`}
+              newTab
+            />
+          </li>
+          <li>iOS and iPadOS hosts will re-appear unless MDM is turned off.</li>
+        </ul>
         <div className="modal-cta-wrap">
           <Button
             type="button"
@@ -71,7 +93,7 @@ const DeleteHostModal = ({
             Cancel
           </Button>
         </div>
-      </form>
+      </>
     </Modal>
   );
 };

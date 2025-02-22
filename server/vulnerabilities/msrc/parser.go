@@ -106,6 +106,8 @@ func mapToSecurityBulletins(rXML *msrcxml.FeedResult) (map[string]*parsed.Securi
 				var vFix parsed.VendorFix
 				if vFix, ok = b.VendorFixes[remediatedKBID]; !ok {
 					vFix = parsed.NewVendorFix(rem.FixedBuild)
+				} else {
+					vFix.AddFixedBuild(rem.FixedBuild)
 				}
 				vFix.Supersedes = supersedes
 				vFix.ProductIDs[pID] = true
@@ -135,7 +137,7 @@ func parseXML(reader io.Reader) (*msrcxml.FeedResult, error) {
 			return nil, fmt.Errorf("decoding token: %v", err)
 		}
 
-		switch t := t.(type) {
+		switch t := t.(type) { //nolint:gocritic // ignore singleCaseSwitch
 		case xml.StartElement:
 			if t.Name.Local == "Branch" {
 				branch := msrcxml.ProductBranch{}

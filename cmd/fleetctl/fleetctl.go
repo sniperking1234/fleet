@@ -12,7 +12,7 @@ import (
 	"time"
 
 	eefleetctl "github.com/fleetdm/fleet/v4/ee/fleetctl"
-	"github.com/kolide/kit/version"
+	"github.com/fleetdm/fleet/v4/server/version"
 	"github.com/urfave/cli/v2"
 )
 
@@ -25,7 +25,7 @@ func init() {
 }
 
 func main() {
-	app := createApp(os.Stdin, os.Stdout, exitErrHandler)
+	app := createApp(os.Stdin, os.Stdout, os.Stderr, exitErrHandler)
 	if err := app.Run(os.Args); err != nil {
 		fmt.Fprintf(os.Stdout, "Error: %+v\n", err)
 		os.Exit(1)
@@ -51,7 +51,12 @@ func exitErrHandler(c *cli.Context, err error) {
 	cli.OsExiter(1)
 }
 
-func createApp(reader io.Reader, writer io.Writer, exitErrHandler cli.ExitErrHandlerFunc) *cli.App {
+func createApp(
+	reader io.Reader,
+	stdout io.Writer,
+	stderr io.Writer,
+	exitErrHandler cli.ExitErrHandlerFunc,
+) *cli.App {
 	app := cli.NewApp()
 	app.Name = "fleetctl"
 	app.Usage = "CLI for operating Fleet"
@@ -61,10 +66,11 @@ func createApp(reader io.Reader, writer io.Writer, exitErrHandler cli.ExitErrHan
 		version.PrintFull()
 	}
 	app.Reader = reader
-	app.Writer = writer
-	app.ErrWriter = writer
+	app.Writer = stdout
+	app.ErrWriter = stderr
 
 	app.Commands = []*cli.Command{
+		apiCommand(),
 		applyCommand(),
 		deleteCommand(),
 		setupCommand(),
@@ -101,6 +107,9 @@ func createApp(reader io.Reader, writer io.Writer, exitErrHandler cli.ExitErrHan
 		},
 		triggerCommand(),
 		mdmCommand(),
+		upgradePacksCommand(),
+		runScriptCommand(),
+		gitopsCommand(),
 	}
 	return app
 }

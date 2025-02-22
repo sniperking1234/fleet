@@ -5,7 +5,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"io/ioutil"
+	"io"
 	"strings"
 	"time"
 
@@ -35,7 +35,7 @@ type CarveStore struct {
 
 // NewCarveStore creates a new store with the given config
 func NewCarveStore(config config.S3Config, metadatadb fleet.CarveStore) (*CarveStore, error) {
-	s3store, err := newS3store(config)
+	s3store, err := newS3store(config.CarvesToInternalCfg())
 	if err != nil {
 		return nil, err
 	}
@@ -57,7 +57,6 @@ func (c *CarveStore) NewCarve(ctx context.Context, metadata *fleet.CarveMetadata
 		Bucket: &c.bucket,
 		Key:    &objectKey,
 	})
-
 	if err != nil {
 		// even if we fail to create the multipart upload, we still want to create
 		// the carve in the database and register an error, this way the user can
@@ -264,7 +263,7 @@ func (c *CarveStore) GetBlock(ctx context.Context, metadata *fleet.CarveMetadata
 		return nil, ctxerr.Wrap(ctx, err, "s3 carve get block")
 	}
 	defer res.Body.Close()
-	carveData, err := ioutil.ReadAll(res.Body)
+	carveData, err := io.ReadAll(res.Body)
 	if err != nil {
 		return nil, ctxerr.Wrap(ctx, err, "s3 carve get block")
 	}
